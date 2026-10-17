@@ -24,7 +24,11 @@ class FirebaseDevBootstrap {
       TargetPlatform.iOS: '1:1086662773964:ios:7425a6009625acec4fc669',
     };
     if (options.projectId != 'matematik-evreni-dev' ||
-        options.appId != expectedAppIds[platform]) {
+        options.appId != expectedAppIds[platform] ||
+        options.messagingSenderId != '1086662773964' ||
+        options.storageBucket != 'matematik-evreni-dev.firebasestorage.app' ||
+        (platform == TargetPlatform.iOS &&
+            options.iosBundleId != 'com.fatihbozkurt.matematik.dev')) {
       throw StateError('Firebase app/project identity mismatch.');
     }
     return options;
