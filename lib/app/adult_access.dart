@@ -17,6 +17,7 @@ abstract interface class AdultAuth {
   Future<AdultSession> register(String email, String password);
   Future<AdultSession> signIn(String email, String password);
   Future<AdultSession> signInWithGoogle();
+  Future<AdultSession> signInWithApple();
   Future<void> sendVerification();
   Future<AdultSession?> refresh();
   Future<void> resetPassword(String email);
@@ -83,6 +84,15 @@ class FirebaseAdultAuth implements AdultAuth {
   }
 
   @override
+  Future<AdultSession> signInWithApple() async {
+    final provider = AppleAuthProvider()..addScope('email');
+    // Firebase handles the native iOS nonce and Android OAuth redirect.
+    // Sign in only: linking existing accounts requires reauthentication.
+    final result = await _ready.signInWithProvider(provider);
+    return _session(result.user!);
+  }
+
+  @override
   Future<void> sendVerification() =>
       _ready.currentUser!.sendEmailVerification();
 
@@ -139,6 +149,10 @@ class _AdultAccessState extends State<AdultAccess> {
   String explain(Object cause) {
     if (cause is FirebaseAuthException) {
       return switch (cause.code) {
+        'operation-not-allowed' =>
+          'Bu giriş yöntemi henüz etkinleştirilmemiş. Başka bir yöntemle giriş yapın.',
+        'web-context-canceled' || 'canceled' || 'cancelled' ||
+        'popup-closed-by-user' => 'Giriş iptal edildi. Yeniden deneyebilirsiniz.',
         'email-already-in-use' => 'Bu e-posta için hesap bulunuyor.',
         'weak-password' => 'Daha güçlü bir şifre seçin.',
         'invalid-email' => 'Geçerli bir e-posta girin.',
@@ -395,6 +409,20 @@ class _AdultAccessState extends State<AdultAccess> {
                 }),
           icon: const Icon(Icons.account_circle_outlined),
           label: const Text('Google ile devam et'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: busy
+              ? null
+              : () => run(() async {
+                  showSession(await widget.auth.signInWithApple());
+                }),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.white,
+            backgroundColor: Colors.black,
+          ),
+          icon: const Icon(Icons.apple),
+          label: const Text('Apple ile devam et'),
         ),
       ],
     ),
