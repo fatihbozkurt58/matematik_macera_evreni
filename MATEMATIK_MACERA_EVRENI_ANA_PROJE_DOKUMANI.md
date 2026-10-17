@@ -1,6 +1,6 @@
 # Matematik Macerası: Mobil Uygulama Ana Ürün ve Uygulama Şartnamesi
 
-Sürüm: 6.11
+Sürüm: 6.12
 Tarih: 17 Ekim 2026  
 Ürün/yayın hesabı sahibi: Fatih Bozkurt  
 App Store Connect mağaza adı: Matematik Macera Evreni\
@@ -16,6 +16,8 @@ Gelir: Reklam yok; yetişkin alanında isteğe bağlı aylık/yıllık Premium
 ## Yürütme Durumu ve Tek İlerleme Sırası
 
 Bu bölüm **uygulamanın gerçekleşme kaydıdır**. Bölüm 1-16 ve Ek A ise hedef ürünün bağlayıcı davranış/içerik sözleşmesidir; orada bir özelliğin tarif edilmesi, kodlandığı, Firebase'e yüklendiği veya mağazada onaylandığı anlamına gelmez. Durumlar yalnız burada tutulur: `TAMAMLANDI` (çıktı ve doğrulama kanıtı mevcut), `DEVAM EDİYOR` (çıktının bir kısmı mevcut), `YAPILACAK` (başlanmadı), `DIŞ GİRDİ BEKLİYOR` (hesap, yetki, hukuki/insan onayı gerekli). Bir aşamanın bazı işleri tamamlanmış olsa bile kabul kapısının **tamamı** geçmeden aşama `TAMAMLANDI` olmaz. Planlanan iş “eksik bırakılacak” anlamına gelmez; ilk teslim kapsamındadır.
+
+**Bilgisayarda devam için oturum devri, 17 Ekim 2026:** Apple giriş istemcisi, widget testleri ve teslim tercihi `868e990` commit'iyle GitHub `main` dalına gönderildi; uzak commit eşleşmesi doğrulandı. Kullanıcı sonraki çalışmayı bilgisayarından sürdürecek. Önce yerel değişiklikler korunarak GitHub `main` güncellenir ve bu yürütme kaydı okunur. Sonraki paket: (1) `.fvmrc` sürümüyle `flutter pub get --enforce-lockfile`, format kontrolü, `flutter analyze`, `flutter test`; (2) yukarıdaki Apple kurulum kaydına göre dev Firebase Apple sağlayıcısı, Apple capability/provisioning ve Android Service ID/dönüş ayarları; (3) dev iOS/Android derlemeleri ve cihaz testleri; (4) yeni build numarasıyla TestFlight yüklemesi ve Apple giriş/iptal/relay/çıkış-tekrar girişte aynı UID ile Google regresyonunun doğrulanması. Yeni Apple kodu mevcut TestFlight binary'sinde yoktur. Bu cloud oturumunda Flutter testleri/derlemeler çalıştırılmadı, portal ayarları yapılmadı, yeni binary yüklenmedi. CI sonucu da henüz doğrulanmadı. A0/A2 açık; bu kimlik paketi doğrulandıktan sonra profil/Rules/Functions adımına geçilir. Her çalışma paketi sonunda MD kanıtlarıyla GitHub'a push yapılır; depo görünürlüğü değiştirilmez.
 
 **Güncel GitHub teslim tercihi, 17 Ekim 2026:** Fatih Bozkurt “public” ifadesiyle depo görünürlüğünü değiştirmeyi değil, her aşama sonunda değişikliklerin GitHub'a gönderilmesini kastettiğini açıkça belirtti. Tamamlanan çalışma paketleri kod, test ve güncel MD kaydıyla commit edilip mevcut GitHub deposuna push edilir; ayrıca onay istenmez. Depo özel kalır. Önceki “yerelde kalsın / push beklemede / yeniden onay” kararları bu talimatla geçersizdir; aşağıdaki eski oturum kayıtları tarihsel bağlamdır. Test/derleme veya dış yapılandırma eksikleri teslim kaydında açık yazılır; push yapılması A0/A2 kabulünün tamamlandığı anlamına gelmez. Mevcut Apple istemci kodu ve testleri bu tercihle gönderilecek; yerel Flutter SDK'sı bulunmadığından çalıştırma doğrulaması bekliyor.
 
