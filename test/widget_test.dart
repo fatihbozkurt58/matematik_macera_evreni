@@ -8,6 +8,7 @@ class FakeAdultAuth implements AdultAuth {
   int initializations = 0;
   AdultSession? current;
   int appleSignIns = 0;
+  int resetRequests = 0;
   Object? appleError;
 
   @override
@@ -48,7 +49,9 @@ class FakeAdultAuth implements AdultAuth {
   Future<AdultSession?> refresh() async => current;
 
   @override
-  Future<void> resetPassword(String email) async {}
+  Future<void> resetPassword(String email) async {
+    resetRequests++;
+  }
 
   @override
   Future<void> signOut() async => current = null;
@@ -56,14 +59,13 @@ class FakeAdultAuth implements AdultAuth {
 
 Future<void> openCredentials(WidgetTester tester, FakeAdultAuth auth) async {
   await tester.pumpWidget(MatematikEvreniApp(auth: auth));
-  expect(find.text('Apple ile devam et'), findsNothing);
+  expect(find.text('Apple ile devam et'), findsOneWidget);
+  expect(find.text('Yetişkin hesabına geç'), findsNothing);
+  expect(auth.initializations, 0);
   expect(auth.appleSignIns, 0);
   await tester.tap(find.byType(CheckboxListTile).first);
   await tester.tap(find.byType(CheckboxListTile).last);
   await tester.pump();
-  await tester.ensureVisible(find.text('Yetişkin hesabına geç'));
-  await tester.tap(find.text('Yetişkin hesabına geç'));
-  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -102,7 +104,10 @@ void main() {
       final button = find.widgetWithText(OutlinedButton, 'Apple ile devam et');
       expect(tester.widget<OutlinedButton>(button).onPressed, isNotNull);
       if (code == 'account-exists-with-different-credential') {
-        expect(find.textContaining('Önce o yöntemle giriş yapın'), findsOneWidget);
+        expect(
+          find.textContaining('Önce o yöntemle giriş yapın'),
+          findsOneWidget,
+        );
       } else if (code == 'operation-not-allowed') {
         expect(find.textContaining('henüz etkinleştirilmemiş'), findsOneWidget);
       } else {
@@ -115,20 +120,28 @@ void main() {
     final auth = FakeAdultAuth();
     await tester.pumpWidget(MatematikEvreniApp(auth: auth));
     expect(find.text('Matematik Macerası'), findsOneWidget);
+    expect(find.text('Apple ile devam et'), findsOneWidget);
     expect(auth.initializations, 0);
-    final button = find.widgetWithText(FilledButton, 'Yetişkin hesabına geç');
-    expect(tester.widget<FilledButton>(button).onPressed, isNull);
+    await tester.ensureVisible(find.text('Apple ile devam et'));
+    await tester.tap(find.text('Apple ile devam et'));
+    await tester.pumpAndSettle();
+    expect(auth.initializations, 0);
+    expect(auth.appleSignIns, 0);
+    expect(find.textContaining('iki onayı'), findsOneWidget);
 
     await tester.tap(find.byType(CheckboxListTile).first);
     await tester.pump();
-    expect(tester.widget<FilledButton>(button).onPressed, isNull);
+    await tester.ensureVisible(find.text('Apple ile devam et'));
+    await tester.tap(find.text('Apple ile devam et'));
+    await tester.pumpAndSettle();
+    expect(auth.initializations, 0);
     await tester.tap(find.byType(CheckboxListTile).last);
     await tester.pump();
-    await tester.ensureVisible(button);
-    await tester.tap(button);
+    await tester.ensureVisible(find.text('Apple ile devam et'));
+    await tester.tap(find.text('Apple ile devam et'));
     await tester.pumpAndSettle();
     expect(auth.initializations, 1);
-    expect(find.text('Giriş yap'), findsOneWidget);
+    expect(auth.appleSignIns, 1);
   });
 
   testWidgets('Unverified account cannot enter profile area', (tester) async {
@@ -137,9 +150,6 @@ void main() {
     await tester.tap(find.byType(CheckboxListTile).first);
     await tester.tap(find.byType(CheckboxListTile).last);
     await tester.pump();
-    await tester.ensureVisible(find.text('Yetişkin hesabına geç'));
-    await tester.tap(find.text('Yetişkin hesabına geç'));
-    await tester.pumpAndSettle();
     await tester.tap(find.text('Kayıt'));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -147,6 +157,7 @@ void main() {
       'adult@example.com',
     );
     await tester.enterText(find.byType(TextFormField).last, 'Password1234');
+    await tester.ensureVisible(find.text('Hesap oluştur'));
     await tester.tap(find.text('Hesap oluştur'));
     await tester.pumpAndSettle();
     expect(find.text('Doğrulamayı kontrol et'), findsOneWidget);
@@ -158,6 +169,24 @@ void main() {
     expect(find.textContaining('Öğrenci profili'), findsOneWidget);
     await tester.tap(find.text('Çıkış yap'));
     await tester.pumpAndSettle();
-    expect(find.text('Giriş yap'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Giriş yap'), findsOneWidget);
+  });
+
+  testWidgets('Restored session does not claim a password reset was sent', (
+    tester,
+  ) async {
+    final auth = FakeAdultAuth()
+      ..current = const AdultSession('saved-uid', 'adult@example.com', true);
+    await openCredentials(tester, auth);
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'adult@example.com',
+    );
+    await tester.ensureVisible(find.text('Şifremi unuttum'));
+    await tester.tap(find.text('Şifremi unuttum'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('saved-uid'), findsOneWidget);
+    expect(auth.resetRequests, 0);
+    expect(find.textContaining('sıfırlama bağlantısı'), findsNothing);
   });
 }

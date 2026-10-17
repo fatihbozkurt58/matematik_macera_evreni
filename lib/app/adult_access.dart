@@ -116,7 +116,7 @@ class FirebaseAdultAuth implements AdultAuth {
   }
 }
 
-enum AccessStep { consent, loading, credentials, verification, profilePending }
+enum AccessStep { credentials, verification, profilePending }
 
 class AdultAccess extends StatefulWidget {
   const AdultAccess({super.key, required this.auth});
@@ -127,12 +127,13 @@ class AdultAccess extends StatefulWidget {
 }
 
 class _AdultAccessState extends State<AdultAccess> {
-  AccessStep step = AccessStep.consent;
+  AccessStep step = AccessStep.credentials;
   bool adult = false;
   bool necessary = false;
   bool register = false;
   bool busy = false;
   bool obscure = true;
+  bool initialized = false;
   String? error;
   AdultSession? session;
   final formKey = GlobalKey<FormState>();
@@ -149,10 +150,12 @@ class _AdultAccessState extends State<AdultAccess> {
   String explain(Object cause) {
     if (cause is FirebaseAuthException) {
       return switch (cause.code) {
-        'operation-not-allowed' =>
-          'Bu giriş yöntemi henüz etkinleştirilmemiş. Başka bir yöntemle giriş yapın.',
-        'web-context-canceled' || 'canceled' || 'cancelled' ||
-        'popup-closed-by-user' => 'Giriş iptal edildi. Yeniden deneyebilirsiniz.',
+        'operation-not-allowed' => 'Bu giriş yöntemi henüz etkinleştirilmemiş. Başka bir yöntemle giriş yapın.',
+        'web-context-canceled' ||
+        'canceled' ||
+        'cancelled' ||
+        'popup-closed-by-user' =>
+          'Giriş iptal edildi. Yeniden deneyebilirsiniz.',
         'email-already-in-use' => 'Bu e-posta için hesap bulunuyor.',
         'weak-password' => 'Daha güçlü bir şifre seçin.',
         'invalid-email' => 'Geçerli bir e-posta girin.',
@@ -194,23 +197,31 @@ class _AdultAccessState extends State<AdultAccess> {
     });
   }
 
-  Future<void> start() => run(() async {
-    setState(() => step = AccessStep.loading);
+  Future<bool> ensureReady() async {
+    if (!adult || !necessary) {
+      setState(() => error = 'Devam etmek için iki onayı işaretleyin.');
+      return false;
+    }
+    if (initialized) return true;
     try {
-      showSession(await widget.auth.initialize());
+      final existing = await widget.auth.initialize();
+      if (!mounted) return false;
+      initialized = true;
+      if (existing != null) showSession(existing);
+      return existing == null;
     } catch (cause, stack) {
       if (kDebugMode) {
         debugPrint('Adult auth bootstrap failed: $cause');
         debugPrintStack(stackTrace: stack);
       }
-      if (mounted) setState(() => step = AccessStep.consent);
       rethrow;
     }
-  });
+  }
 
   Future<void> submit() async {
     if (!formKey.currentState!.validate()) return;
     await run(() async {
+      if (!await ensureReady()) return;
       final value = register
           ? await widget.auth.register(email.text.trim(), password.text)
           : await widget.auth.signIn(email.text.trim(), password.text);
@@ -234,36 +245,26 @@ class _AdultAccessState extends State<AdultAccess> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Center(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: Image.asset(
-                      'assets/branding/app-icon-master.png',
-                      width: 88,
-                      height: 88,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
                 Text(
                   'Matematik Macerası',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineMedium
-                      ?.copyWith(fontWeight: FontWeight.bold),
+                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF137C72),
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Yetişkin hesabı',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleMedium,
+                  'Giriş yap',
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
-                const SizedBox(height: 32),
-                if (step == AccessStep.consent) consentView(),
-                if (step == AccessStep.loading)
-                  const Center(child: CircularProgressIndicator()),
+                const SizedBox(height: 24),
                 if (step == AccessStep.credentials) credentialsView(),
                 if (step == AccessStep.verification) verificationView(),
                 if (step == AccessStep.profilePending) pendingView(),
+                if (busy) ...[
+                  const SizedBox(height: 16),
+                  const Center(child: CircularProgressIndicator()),
+                ],
                 if (error != null) ...[
                   const SizedBox(height: 16),
                   Text(
@@ -277,39 +278,6 @@ class _AdultAccessState extends State<AdultAccess> {
         ),
       ),
     ),
-  );
-
-  Widget consentView() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      const Text(
-        'Geliştirme sürümü. Yalnız test hesabı kullanın; gerçek çocuk bilgisi girmeyin.',
-      ),
-      const SizedBox(height: 16),
-      const Text(
-        'Devam edildiğinde hesap e-postası ve kimlik doğrulama verileri geliştirme Firebase projesine gönderilir. Çocuk profili ve oyun henüz kapalıdır.',
-      ),
-      const SizedBox(height: 16),
-      CheckboxListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text('18 yaşından büyük bir yetişkinim.'),
-        value: adult,
-        onChanged: busy ? null : (v) => setState(() => adult = v ?? false),
-      ),
-      CheckboxListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text(
-          'Test hesabım için gerekli veri işlemesini kabul ediyorum.',
-        ),
-        value: necessary,
-        onChanged: busy ? null : (v) => setState(() => necessary = v ?? false),
-      ),
-      const SizedBox(height: 12),
-      FilledButton(
-        onPressed: adult && necessary && !busy ? start : null,
-        child: const Text('Yetişkin hesabına geç'),
-      ),
-    ],
   );
 
   Widget credentialsView() => Form(
@@ -372,6 +340,27 @@ class _AdultAccessState extends State<AdultAccess> {
           },
         ),
         const SizedBox(height: 20),
+        const Text(
+          'Geliştirme sürümü: yalnız yetişkin test hesabı kullanın. Çocuk bilgisi girmeyin.',
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('18 yaşından büyük bir yetişkinim.'),
+          value: adult,
+          onChanged: busy ? null : (v) => setState(() => adult = v ?? false),
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Hesap verilerimin işlenmesini kabul ediyorum.'),
+          subtitle: const Text(
+            'Kimlik bilgileri geliştirme Firebase projesine gönderilir.',
+          ),
+          value: necessary,
+          onChanged: busy
+              ? null
+              : (v) => setState(() => necessary = v ?? false),
+        ),
+        const SizedBox(height: 8),
         FilledButton(
           onPressed: busy ? null : submit,
           child: Text(register ? 'Hesap oluştur' : 'Giriş yap'),
@@ -387,8 +376,14 @@ class _AdultAccessState extends State<AdultAccess> {
                       setState(() => error = 'Önce geçerli bir e-posta girin.');
                       return;
                     }
-                    await run(() => widget.auth.resetPassword(value));
-                    if (mounted && error == null) {
+                    var sent = false;
+                    await run(() async {
+                      if (await ensureReady()) {
+                        await widget.auth.resetPassword(value);
+                        sent = true;
+                      }
+                    });
+                    if (mounted && sent && error == null) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text(
@@ -405,6 +400,7 @@ class _AdultAccessState extends State<AdultAccess> {
           onPressed: busy
               ? null
               : () => run(() async {
+                  if (!await ensureReady()) return;
                   showSession(await widget.auth.signInWithGoogle());
                 }),
           icon: const Icon(Icons.account_circle_outlined),
@@ -415,6 +411,7 @@ class _AdultAccessState extends State<AdultAccess> {
           onPressed: busy
               ? null
               : () => run(() async {
+                  if (!await ensureReady()) return;
                   showSession(await widget.auth.signInWithApple());
                 }),
           style: OutlinedButton.styleFrom(
