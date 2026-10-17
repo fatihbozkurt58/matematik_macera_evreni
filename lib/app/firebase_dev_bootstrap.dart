@@ -1,3 +1,4 @@
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show appFlavor;
@@ -35,7 +36,7 @@ class FirebaseDevBootstrap {
   }
 
   // Call only after the adult has accepted the required account data processing.
-  static Future<FirebaseApp> initializeAfterAdultConsent() {
+  static Future<FirebaseApp> initializeAfterAdultConsent() async {
     if (kIsWeb) {
       throw UnsupportedError('Web is not configured.');
     }
@@ -43,6 +44,11 @@ class FirebaseDevBootstrap {
       flavor: appFlavor,
       platform: defaultTargetPlatform,
     );
-    return Firebase.initializeApp(options: options);
+    final app = await Firebase.initializeApp(options: options);
+    await FirebaseAppCheck.instanceFor(app: app).activate(
+      providerAndroid: const AndroidDebugProvider(),
+      providerApple: const AppleDebugProvider(),
+    );
+    return app;
   }
 }

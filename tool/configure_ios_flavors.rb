@@ -39,6 +39,7 @@ lists.each do |list|
       suffix = flavor == 'prod' ? '' : ".#{flavor}"
       config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = "com.fatihbozkurt.matematik#{suffix}"
       config.build_settings['APP_DISPLAY_NAME'] = flavor == 'prod' ? 'Matematik Evreni' : "Matematik Evreni #{flavor.capitalize}"
+      config.build_settings['DEVELOPMENT_TEAM'] = 'J2Z6CW4DZD'
       config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'Runner/Runner.entitlements'
       if flavor == 'dev'
         config.build_settings['GOOGLE_CLIENT_ID'] = dev_plist['CLIENT_ID']
@@ -73,9 +74,11 @@ project.save
 source_scheme = File.join(project_path, 'xcshareddata', 'xcschemes', 'Runner.xcscheme')
 flavors.each do |flavor|
   scheme_path = File.join(project_path, 'xcshareddata', 'xcschemes', "#{flavor}.xcscheme")
-  document = REXML::Document.new(File.read(source_scheme))
+  template = File.exist?(scheme_path) ? scheme_path : source_scheme
+  document = REXML::Document.new(File.read(template))
   REXML::XPath.each(document, '//*[@buildConfiguration]') do |node|
-    node.attributes['buildConfiguration'] = "#{node.attributes['buildConfiguration']}-#{flavor}"
+    base_name = node.attributes['buildConfiguration'].sub(/-(dev|staging|prod)\z/, '')
+    node.attributes['buildConfiguration'] = "#{base_name}-#{flavor}"
   end
   File.open(scheme_path, 'w') { |file| document.write(file, 2) }
 end
