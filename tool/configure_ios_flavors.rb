@@ -38,7 +38,7 @@ lists.each do |list|
 
       suffix = flavor == 'prod' ? '' : ".#{flavor}"
       config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = "com.fatihbozkurt.matematik#{suffix}"
-      config.build_settings['APP_DISPLAY_NAME'] = flavor == 'prod' ? 'Matematik Evreni' : "Matematik Evreni #{flavor.capitalize}"
+      config.build_settings['APP_DISPLAY_NAME'] = flavor == 'staging' ? 'Matematik Macerası Staging' : 'Matematik Macerası'
       config.build_settings['DEVELOPMENT_TEAM'] = 'J2Z6CW4DZD'
       config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'Runner/Runner.entitlements'
       if flavor == 'dev'

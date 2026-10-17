@@ -44,7 +44,7 @@ storageUrl.searchParams.set('name', objectName);
 const object = await request(storageUrl, {
   method: 'POST',
   headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  body: `Matematik Evreni dev connection probe: ${checkedAt}\n`,
+  body: `Matematik Macerası dev connection probe: ${checkedAt}\n`,
 });
 if (object.bucket !== bucket || object.name !== objectName) {
   throw new Error('Storage returned an unexpected object identity.');
