@@ -1,0 +1,24 @@
+name: matematik
+description: Matematik Evreni iOS ve Android uygulamasi.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.13.4 <4.0.0'
+
+dependencies:
+  cloud_firestore: ^6.3.0
+  firebase_auth: ^6.4.0
+  firebase_core: ^4.15.0
+  firebase_storage: ^13.3.0
+  flutter:
+    sdk: flutter
+  google_sign_in: ^7.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

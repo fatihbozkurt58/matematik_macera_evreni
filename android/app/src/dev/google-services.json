@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "1086662773964",
+    "project_id": "matematik-evreni-dev",
+    "storage_bucket": "matematik-evreni-dev.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1086662773964:android:429cd8d2400e93844fc669",
+        "android_client_info": {
+          "package_name": "com.fatihbozkurt.matematik.dev"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1086662773964-rpmaslo2j4j8vmnvns0lkidamit6lonm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.fatihbozkurt.matematik.dev",
+            "certificate_hash": "1c44b963ac53c1e855220fcaea39748f9b6ebf01"
+          }
+        },
+        {
+          "client_id": "1086662773964-dsg9vcjrh1cnbj7055v3q47v06ebp2r6.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB4sAwLaXaKQiwNkRjSYznQIBt7j8eBDAA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1086662773964-dsg9vcjrh1cnbj7055v3q47v06ebp2r6.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1086662773964-gjl9gbovdb08dkthc9doial0lgpsrk95.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.fatihbozkurt.matematik.dev"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
