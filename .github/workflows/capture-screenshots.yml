@@ -1,5 +1,6 @@
 name: Build Test Screenshot
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       platform:
@@ -32,7 +33,7 @@ jobs:
 
   android:
     needs: verify
-    if: ${{ inputs.platform == 'both' || inputs.platform == 'android' }}
+    if: ${{ github.event_name == 'pull_request' || inputs.platform == 'both' || inputs.platform == 'android' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
