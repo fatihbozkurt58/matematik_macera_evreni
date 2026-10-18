@@ -68,7 +68,8 @@ jobs:
             test -s screenshots/android-login.png
       - name: Android screenshot summary
         if: success()
-        run: echo 'Android screenshot: download the android-login artifact from this run.' >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo 'Android screenshot: download the android-login artifact from this run.' >> "$GITHUB_STEP_SUMMARY"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -126,7 +127,8 @@ jobs:
           test -s screenshots/ios-login.png
       - name: iOS screenshot summary
         if: success()
-        run: echo 'iOS screenshot: download the ios-login artifact from this run.' >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo 'iOS screenshot: download the ios-login artifact from this run.' >> "$GITHUB_STEP_SUMMARY"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
