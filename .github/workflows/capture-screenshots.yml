@@ -1,5 +1,7 @@
 name: Build Test Screenshot
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -33,7 +35,7 @@ jobs:
 
   android:
     needs: verify
-    if: ${{ github.event_name == 'pull_request' || inputs.platform == 'both' || inputs.platform == 'android' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'both' || inputs.platform == 'android' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -62,7 +64,8 @@ jobs:
             mkdir -p screenshots
             adb install -r build/app/outputs/flutter-apk/app-dev-debug.apk
             adb shell monkey -p com.fatihbozkurt.matematik.dev 1
-            sleep 12
+            sleep 15
+            adb shell pidof com.fatihbozkurt.matematik.dev
             adb shell dumpsys activity activities | grep -q com.fatihbozkurt.matematik.dev
             adb exec-out screencap -p > screenshots/android-login.png
             test -s screenshots/android-login.png
