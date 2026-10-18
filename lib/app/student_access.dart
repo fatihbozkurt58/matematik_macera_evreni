@@ -1,60 +1,75 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show appFlavor;
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_dev_bootstrap.dart';
+import 'student_profile.dart';
 
-class AdultSession {
-  const AdultSession(this.uid, this.email, this.verified);
+const devTestAccountsEnabled =
+    kDebugMode &&
+    bool.fromEnvironment('ENABLE_DEV_TEST_ACCOUNTS', defaultValue: false);
+
+class StudentSession {
+  const StudentSession(this.uid, this.email, this.verified, {this.nickname});
   final String uid;
   final String? email;
   final bool verified;
+  final String? nickname;
 }
 
-abstract interface class AdultAuth {
-  Future<AdultSession?> initialize();
-  Future<AdultSession> register(String email, String password);
-  Future<AdultSession> signIn(String email, String password);
-  Future<AdultSession> signInWithGoogle();
-  Future<AdultSession> signInWithApple();
+abstract interface class StudentAuth {
+  Stream<StudentSession?> get sessionChanges;
+  Future<StudentSession?> initialize();
+  Future<StudentSession> register(
+    String nickname,
+    String email,
+    String password,
+  );
+  Future<StudentSession> signIn(String email, String password);
+  Future<StudentSession> signInWithGoogle();
+  Future<StudentSession> signInWithApple();
   Future<void> sendVerification();
-  Future<AdultSession?> refresh();
+  Future<StudentSession?> refresh();
   Future<void> resetPassword(String email);
   Future<void> signOut();
 }
 
-abstract interface class AdultConsentStore {
-  Future<bool> hasCurrentConsent();
-  Future<void> acceptCurrentConsent();
-}
-
-class LocalAdultConsentStore implements AdultConsentStore {
-  static const _key = 'adult_consent_version';
-  static const _version = 'dev-adult-1';
-  final SharedPreferencesAsync _prefs = SharedPreferencesAsync();
-
-  @override
-  Future<bool> hasCurrentConsent() async =>
-      await _prefs.getString(_key) == _version;
-
-  @override
-  Future<void> acceptCurrentConsent() => _prefs.setString(_key, _version);
-}
-
-class FirebaseAdultAuth implements AdultAuth {
+class FirebaseStudentAuth implements StudentAuth {
   FirebaseAuth? _auth;
   bool _googleInitialized = false;
 
-  FirebaseAuth get _ready => _auth ?? (throw StateError('Consent required'));
-
-  AdultSession _session(User user) =>
-      AdultSession(user.uid, user.email, user.emailVerified);
+  FirebaseAuth get _ready =>
+      _auth ?? (throw StateError('Firebase is not initialized'));
 
   @override
-  Future<AdultSession?> initialize() async {
-    final app = await FirebaseDevBootstrap.initializeAfterAdultConsent();
+  Stream<StudentSession?> get sessionChanges => _ready.idTokenChanges().map(
+    (user) => user == null ? null : _session(user),
+  );
+
+  StudentSession _session(User user) => StudentSession(
+    user.uid,
+    user.email,
+    user.emailVerified,
+    nickname:
+        user.providerData.any((provider) => provider.providerId == 'password')
+        ? user.displayName
+        : null,
+  );
+
+  void _requireDevTestAccounts() {
+    if (!devTestAccountsEnabled || appFlavor != 'dev') {
+      throw StateError('New accounts are not enabled for this build.');
+    }
+  }
+
+  @override
+  Future<StudentSession?> initialize() async {
+    final app = await FirebaseDevBootstrap.initialize();
     _auth = FirebaseAuth.instanceFor(app: app);
     final user = _ready.currentUser;
     if (user == null) return null;
@@ -64,21 +79,7 @@ class FirebaseAdultAuth implements AdultAuth {
   }
 
   @override
-  Future<AdultSession> register(String email, String password) async {
-    final result = await _ready.createUserWithEmailAndPassword(
-      email: email,
-      password: password,
-    );
-    try {
-      await result.user!.sendEmailVerification();
-    } on FirebaseAuthException {
-      // The account already exists; the verification screen can retry delivery.
-    }
-    return _session(result.user!);
-  }
-
-  @override
-  Future<AdultSession> signIn(String email, String password) async {
+  Future<StudentSession> signIn(String email, String password) async {
     final result = await _ready.signInWithEmailAndPassword(
       email: email,
       password: password,
@@ -88,7 +89,24 @@ class FirebaseAdultAuth implements AdultAuth {
   }
 
   @override
-  Future<AdultSession> signInWithGoogle() async {
+  Future<StudentSession> register(
+    String nickname,
+    String email,
+    String password,
+  ) async {
+    _requireDevTestAccounts();
+    final result = await _ready.createUserWithEmailAndPassword(
+      email: email,
+      password: password,
+    );
+    await result.user!.updateDisplayName(nickname);
+    await result.user!.sendEmailVerification();
+    return _session(result.user!);
+  }
+
+  @override
+  Future<StudentSession> signInWithGoogle() async {
+    _requireDevTestAccounts();
     if (!_googleInitialized) {
       await GoogleSignIn.instance.initialize();
       _googleInitialized = true;
@@ -103,9 +121,13 @@ class FirebaseAdultAuth implements AdultAuth {
   }
 
   @override
-  Future<AdultSession> signInWithApple() async {
+  Future<StudentSession> signInWithApple() async {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      throw UnsupportedError('Apple sign-in is available only on iOS.');
+    }
+    _requireDevTestAccounts();
     final provider = AppleAuthProvider()..addScope('email');
-    // Firebase handles the native iOS nonce and Android OAuth redirect.
+    // Firebase handles the native iOS nonce.
     // Sign in only: linking existing accounts requires reauthentication.
     final result = await _ready.signInWithProvider(provider);
     return _session(result.user!);
@@ -116,7 +138,7 @@ class FirebaseAdultAuth implements AdultAuth {
       _ready.currentUser!.sendEmailVerification();
 
   @override
-  Future<AdultSession?> refresh() async {
+  Future<StudentSession?> refresh() async {
     final user = _ready.currentUser;
     if (user == null) return null;
     await user.reload();
@@ -135,50 +157,88 @@ class FirebaseAdultAuth implements AdultAuth {
   }
 }
 
-enum AccessStep { credentials, verification, profilePending }
-
-class AdultAccess extends StatefulWidget {
-  const AdultAccess({super.key, required this.auth, this.consentStore});
-  final AdultAuth auth;
-  final AdultConsentStore? consentStore;
-
-  @override
-  State<AdultAccess> createState() => _AdultAccessState();
+enum AccessStep {
+  credentials,
+  verification,
+  profileForm,
+  compliancePending,
+  ready,
+  profileError,
 }
 
-class _AdultAccessState extends State<AdultAccess> {
+class StudentAccess extends StatefulWidget {
+  const StudentAccess({
+    super.key,
+    required this.auth,
+    required this.profiles,
+    this.allowDevTestAccounts = false,
+  });
+  final StudentAuth auth;
+  final StudentProfileRepository profiles;
+  final bool allowDevTestAccounts;
+
+  @override
+  State<StudentAccess> createState() => _StudentAccessState();
+}
+
+class _StudentAccessState extends State<StudentAccess>
+    with WidgetsBindingObserver {
   AccessStep step = AccessStep.credentials;
-  late final AdultConsentStore consentStore =
-      widget.consentStore ?? LocalAdultConsentStore();
   bool bootstrapping = true;
-  bool consentGranted = false;
-  bool register = false;
   bool busy = false;
   bool obscure = true;
   bool initialized = false;
+  bool register = false;
+  bool profileLoading = false;
+  int? grade;
   String? error;
-  AdultSession? session;
+  StudentSession? session;
+  StudentProfile? profile;
   final formKey = GlobalKey<FormState>();
+  final profileFormKey = GlobalKey<FormState>();
+  final nickname = TextEditingController();
+  final profileNickname = TextEditingController();
   final email = TextEditingController();
   final password = TextEditingController();
+  final passwordRepeat = TextEditingController();
+  StreamSubscription<StudentSession?>? sessionSubscription;
+
+  void watchAuthChanges() {
+    sessionSubscription ??= widget.auth.sessionChanges.listen((changed) {
+      if (!mounted || bootstrapping || busy) return;
+      if (changed?.uid != session?.uid ||
+          changed?.verified != session?.verified) {
+        unawaited(showSession(changed));
+      }
+    });
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     restoreSession();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed ||
+        !initialized ||
+        session == null ||
+        busy ||
+        bootstrapping) {
+      return;
+    }
+    unawaited(run(() async => showSession(await widget.auth.refresh())));
   }
 
   Future<void> restoreSession() async {
     try {
-      final accepted = await consentStore.hasCurrentConsent();
+      final existing = await widget.auth.initialize();
       if (!mounted) return;
-      consentGranted = accepted;
-      if (accepted) {
-        final existing = await widget.auth.initialize();
-        if (!mounted) return;
-        initialized = true;
-        if (existing != null) showSession(existing);
-      }
+      initialized = true;
+      if (existing != null) await showSession(existing);
+      watchAuthChanges();
     } catch (cause) {
       if (mounted) setState(() => error = explain(cause));
     } finally {
@@ -188,12 +248,30 @@ class _AdultAccessState extends State<AdultAccess> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    final subscription = sessionSubscription;
+    if (subscription != null) unawaited(subscription.cancel());
+    nickname.dispose();
+    profileNickname.dispose();
     email.dispose();
     password.dispose();
+    passwordRepeat.dispose();
     super.dispose();
   }
 
   String explain(Object cause) {
+    if (cause is FirebaseFunctionsException) {
+      return switch (cause.code) {
+        'failed-precondition' => 'Önce e-posta doğrulamasını tamamlayın.',
+        'already-exists' => 'Bu hesap için profil zaten var. Yeniden yükleyin.',
+        'unavailable' =>
+          'Sunucuya ulaşılamadı. Bağlantıyı kontrol edip yeniden deneyin.',
+        _ => 'Profil kaydedilemedi. Biraz sonra yeniden deneyin.',
+      };
+    }
+    if (cause is FirebaseException && cause.plugin == 'cloud_firestore') {
+      return 'Profil okunamadı. Bağlantıyı kontrol edip yeniden deneyin.';
+    }
     if (cause is FirebaseAuthException) {
       return switch (cause.code) {
         'operation-not-allowed' => 'Bu giriş yöntemi henüz etkinleştirilmemiş. Başka bir yöntemle giriş yapın.',
@@ -230,120 +308,60 @@ class _AdultAccessState extends State<AdultAccess> {
     }
   }
 
-  void showSession(AdultSession? value) {
+  Future<void> showSession(StudentSession? value) async {
+    if (!mounted) return;
     setState(() {
       session = value;
       if (value == null) register = false;
+      profile = null;
+      profileLoading = value?.verified ?? false;
       step = value == null
           ? AccessStep.credentials
           : value.verified
-          ? AccessStep.profilePending
+          ? AccessStep.profileForm
           : AccessStep.verification;
+      if (value?.nickname != null) profileNickname.text = value!.nickname!;
       password.clear();
+      passwordRepeat.clear();
     });
-  }
-
-  Future<bool> requestAdultConsent() async {
-    var isAdult = false;
-    var acceptsData = false;
-    final accepted = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (sheetContext) => StatefulBuilder(
-        builder: (context, updateSheet) => SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(
-            24,
-            8,
-            24,
-            MediaQuery.viewInsetsOf(context).bottom + 24,
-          ),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 440),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Yetişkin onayı',
-                    style: Theme.of(context).textTheme.headlineSmall
-                        ?.copyWith(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Hesap bir yetişkin tarafından yönetilir. Devam etmeden önce iki beyanı onaylayın.',
-                  ),
-                  const SizedBox(height: 16),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEAF5F7),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Padding(
-                      padding: EdgeInsets.all(14),
-                      child: Text(
-                        'Bu geliştirme sürümünde hesap verileri dev Firebase projesine gönderilir. Gerçek çocuk bilgisi girmeyin.',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    title: const Text('18 yaşından büyük bir yetişkinim.'),
-                    value: isAdult,
-                    onChanged: (value) =>
-                        updateSheet(() => isAdult = value ?? false),
-                  ),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    title: const Text(
-                      'Hesap verilerimin işlenmesini kabul ediyorum.',
-                    ),
-                    value: acceptsData,
-                    onChanged: (value) =>
-                        updateSheet(() => acceptsData = value ?? false),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    onPressed: isAdult && acceptsData
-                        ? () => Navigator.of(sheetContext).pop(true)
-                        : null,
-                    child: const Text('Onayla ve devam et'),
-                  ),
-                  TextButton(
-                    onPressed: () => Navigator.of(sheetContext).pop(false),
-                    child: const Text('Vazgeç'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    return accepted ?? false;
+    if (value == null || !value.verified) return;
+    try {
+      final loaded = await widget.profiles.load(value.uid);
+      if (!mounted || session?.uid != value.uid) return;
+      setState(() {
+        profile = loaded;
+        step = loaded == null
+            ? AccessStep.profileForm
+            : loaded.canEnterGame
+            ? AccessStep.ready
+            : AccessStep.compliancePending;
+      });
+    } catch (cause) {
+      if (mounted && session?.uid == value.uid) {
+        setState(() {
+          error = explain(cause);
+          step = AccessStep.profileError;
+        });
+      }
+    } finally {
+      if (mounted && session?.uid == value.uid) {
+        setState(() => profileLoading = false);
+      }
+    }
   }
 
   Future<bool> ensureReady() async {
-    if (!consentGranted) {
-      if (!await requestAdultConsent() || !mounted) return false;
-      await consentStore.acceptCurrentConsent();
-      consentGranted = true;
-    }
     if (initialized) return true;
     try {
       final existing = await widget.auth.initialize();
       if (!mounted) return false;
       initialized = true;
-      if (existing != null) showSession(existing);
+      if (existing != null) await showSession(existing);
+      watchAuthChanges();
       return existing == null;
     } catch (cause, stack) {
       if (kDebugMode) {
-        debugPrint('Adult auth bootstrap failed: $cause');
+        debugPrint('Student auth bootstrap failed: $cause');
         debugPrintStack(stackTrace: stack);
       }
       rethrow;
@@ -355,16 +373,46 @@ class _AdultAccessState extends State<AdultAccess> {
     await run(() async {
       if (!await ensureReady()) return;
       final value = register
-          ? await widget.auth.register(email.text.trim(), password.text)
+          ? await widget.auth.register(
+              nickname.text.trim(),
+              email.text.trim(),
+              password.text,
+            )
           : await widget.auth.signIn(email.text.trim(), password.text);
-      showSession(value);
+      await showSession(value);
     });
   }
 
   Future<void> logout() => run(() async {
     await widget.auth.signOut();
-    showSession(null);
+    await showSession(null);
   });
+
+  Future<void> submitProfile() async {
+    if (!profileFormKey.currentState!.validate()) return;
+    await run(() async {
+      final uid = session?.uid;
+      if (uid == null || session?.verified != true) return;
+      final saved = await widget.profiles.complete(
+        uid,
+        profileNickname.text.trim(),
+        grade!,
+      );
+      if (!mounted || session?.uid != uid) return;
+      setState(() {
+        profile = saved;
+        step = saved.canEnterGame
+            ? AccessStep.ready
+            : AccessStep.compliancePending;
+      });
+    });
+  }
+
+  bool _validNickname(String? value) {
+    final name = value?.trim() ?? '';
+    return RegExp(r'^[a-zA-ZÇĞİÖŞÜçğıöşü][a-zA-ZÇĞİÖŞÜçğıöşü0-9_]{2,19}$')
+        .hasMatch(name);
+  }
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -398,9 +446,12 @@ class _AdultAccessState extends State<AdultAccess> {
                 const SizedBox(height: 30),
                 Text(
                   switch (step) {
-                    AccessStep.credentials => 'Yetişkin hesabı',
+                    AccessStep.credentials => 'Hoş geldin',
                     AccessStep.verification => 'E-postanızı doğrulayın',
-                    AccessStep.profilePending => 'Hesabınız hazır',
+                    AccessStep.profileForm => 'Profilini tamamla',
+                    AccessStep.compliancePending => 'Hesap hazırlanıyor',
+                    AccessStep.ready => 'Hazırsın',
+                    AccessStep.profileError => 'Profil yüklenemedi',
                   },
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.bold,
@@ -437,8 +488,13 @@ class _AdultAccessState extends State<AdultAccess> {
                   ],
                   if (step == AccessStep.credentials) credentialsView(),
                   if (step == AccessStep.verification) verificationView(),
-                  if (step == AccessStep.profilePending) pendingView(),
-                  if (busy) ...[
+                  if (step == AccessStep.profileForm && !profileLoading)
+                    profileFormView(),
+                  if (step == AccessStep.compliancePending)
+                    compliancePendingView(),
+                  if (step == AccessStep.ready) readyView(),
+                  if (step == AccessStep.profileError) profileErrorView(),
+                  if (busy || profileLoading) ...[
                     const SizedBox(height: 18),
                     const LinearProgressIndicator(),
                   ],
@@ -456,20 +512,35 @@ class _AdultAccessState extends State<AdultAccess> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SegmentedButton<bool>(
-          segments: const [
-            ButtonSegment(value: false, label: Text('Giriş')),
-            ButtonSegment(value: true, label: Text('Kayıt')),
-          ],
-          selected: {register},
-          onSelectionChanged: busy
-              ? null
-              : (v) => setState(() {
-                  register = v.first;
-                  error = null;
-                }),
-        ),
-        const SizedBox(height: 22),
+        if (widget.allowDevTestAccounts) ...[
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, label: Text('Giriş')),
+              ButtonSegment(value: true, label: Text('Kayıt')),
+            ],
+            selected: {register},
+            onSelectionChanged: busy
+                ? null
+                : (value) => setState(() {
+                    register = value.first;
+                    error = null;
+                    passwordRepeat.clear();
+                  }),
+          ),
+          const SizedBox(height: 18),
+        ],
+        if (!widget.allowDevTestAccounts) const SizedBox(height: 18),
+        if (register) ...[
+          TextFormField(
+            controller: nickname,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(labelText: 'Takma Adınız'),
+            validator: (value) => _validNickname(value)
+                ? null
+                : '3-20 karakterlik bir takma ad girin.',
+          ),
+          const SizedBox(height: 12),
+        ],
         TextFormField(
           controller: email,
           keyboardType: TextInputType.emailAddress,
@@ -511,6 +582,21 @@ class _AdultAccessState extends State<AdultAccess> {
             if (!busy) submit();
           },
         ),
+        if (register) ...[
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: passwordRepeat,
+            obscureText: obscure,
+            textInputAction: TextInputAction.done,
+            autofillHints: const [AutofillHints.newPassword],
+            decoration: const InputDecoration(labelText: 'Şifre tekrar'),
+            validator: (value) =>
+                value == password.text ? null : 'Şifreler eşleşmiyor.',
+            onFieldSubmitted: (_) {
+              if (!busy) submit();
+            },
+          ),
+        ],
         const SizedBox(height: 18),
         FilledButton(
           onPressed: busy ? null : submit,
@@ -559,38 +645,32 @@ class _AdultAccessState extends State<AdultAccess> {
         ),
         const SizedBox(height: 12),
         OutlinedButton.icon(
-          onPressed: busy
+          onPressed: busy || !widget.allowDevTestAccounts
               ? null
               : () => run(() async {
                   if (!await ensureReady()) return;
-                  showSession(await widget.auth.signInWithGoogle());
+                  await showSession(await widget.auth.signInWithGoogle());
                 }),
           icon: const Icon(Icons.account_circle_outlined),
           label: const Text('Google ile devam et'),
         ),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(
-          onPressed: busy
-              ? null
-              : () => run(() async {
-                  if (!await ensureReady()) return;
-                  showSession(await widget.auth.signInWithApple());
-                }),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: Colors.white,
-            backgroundColor: Colors.black,
+        if (Theme.of(context).platform == TargetPlatform.iOS) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: busy || !widget.allowDevTestAccounts
+                ? null
+                : () => run(() async {
+                    if (!await ensureReady()) return;
+                    await showSession(await widget.auth.signInWithApple());
+                  }),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              backgroundColor: Colors.black,
+            ),
+            icon: const Icon(Icons.apple),
+            label: const Text('Apple ile devam et'),
           ),
-          icon: const Icon(Icons.apple),
-          label: const Text('Apple ile devam et'),
-        ),
-        const SizedBox(height: 22),
-        const Center(
-          child: Text(
-            'Hesap işlemleri yalnızca yetişkinler içindir.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Color(0xFF526773), fontSize: 13),
-          ),
-        ),
+        ],
       ],
     ),
   );
@@ -606,7 +686,7 @@ class _AdultAccessState extends State<AdultAccess> {
         onPressed: busy
             ? null
             : () => run(() async {
-                showSession(await widget.auth.refresh());
+                await showSession(await widget.auth.refresh());
               }),
         child: const Text('Doğrulamayı kontrol et'),
       ),
@@ -621,20 +701,83 @@ class _AdultAccessState extends State<AdultAccess> {
     ],
   );
 
-  Widget pendingView() => Column(
+  Widget profileFormView() => Form(
+    key: profileFormKey,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextFormField(
+          controller: profileNickname,
+          decoration: const InputDecoration(labelText: 'Takma Adınız'),
+          validator: (value) => _validNickname(value)
+              ? null
+              : '3-20 karakterlik bir takma ad girin.',
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<int>(
+          initialValue: grade,
+          decoration: const InputDecoration(labelText: 'Sınıfın'),
+          items: [
+            for (var value = 1; value <= 5; value++)
+              DropdownMenuItem(value: value, child: Text('$value. sınıf')),
+          ],
+          onChanged: busy ? null : (value) => setState(() => grade = value),
+          validator: (value) => value == null ? 'Sınıfını seç.' : null,
+        ),
+        const SizedBox(height: 18),
+        FilledButton(
+          onPressed: busy ? null : submitProfile,
+          child: const Text('Profili kaydet'),
+        ),
+        TextButton(
+          onPressed: busy ? null : logout,
+          child: const Text('Çıkış yap'),
+        ),
+      ],
+    ),
+  );
+
+  Widget compliancePendingView() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      const Icon(
-        Icons.verified_user_outlined,
-        size: 52,
-        color: Color(0xFF137C72),
-      ),
+      const Icon(Icons.shield_outlined, size: 52, color: Color(0xFF137C72)),
       const SizedBox(height: 16),
       const Text(
-        'Giriş başarılı. Çocuk profili ve oyun haritası bu test sürümünde henüz açık değil.',
+        'Profilin kaydedildi. Hesap uygunluğu tamamlanana kadar oyun alanı kapalı.',
       ),
       const SizedBox(height: 20),
+      FilledButton(
+        onPressed: busy ? null : () => run(() => showSession(session)),
+        child: const Text('Durumu kontrol et'),
+      ),
       OutlinedButton(
+        onPressed: busy ? null : logout,
+        child: const Text('Çıkış yap'),
+      ),
+    ],
+  );
+
+  Widget profileErrorView() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      FilledButton(
+        onPressed: busy ? null : () => run(() => showSession(session)),
+        child: const Text('Yeniden dene'),
+      ),
+      TextButton(
+        onPressed: busy ? null : logout,
+        child: const Text('Çıkış yap'),
+      ),
+    ],
+  );
+
+  Widget readyView() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Text('${profile?.nickname ?? ''} · ${profile?.grade ?? ''}. sınıf'),
+      const SizedBox(height: 12),
+      const Text('Oyun alanı sonraki aşamada açılacak.'),
+      TextButton(
         onPressed: busy ? null : logout,
         child: const Text('Çıkış yap'),
       ),

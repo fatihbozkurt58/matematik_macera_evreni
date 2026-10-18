@@ -35,8 +35,7 @@ class FirebaseDevBootstrap {
     return options;
   }
 
-  // Call only after the adult has accepted the required account data processing.
-  static Future<FirebaseApp> initializeAfterAdultConsent() async {
+  static Future<FirebaseApp> initialize() async {
     if (kIsWeb) {
       throw UnsupportedError('Web is not configured.');
     }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'app/adult_access.dart';
+import 'app/student_access.dart';
+import 'app/student_profile.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -8,10 +9,18 @@ void main() {
 }
 
 class MatematikEvreniApp extends StatelessWidget {
-  const MatematikEvreniApp({super.key, this.auth, this.consentStore});
+  const MatematikEvreniApp({
+    super.key,
+    this.auth,
+    this.profiles,
+    this.platform,
+    this.allowDevTestAccounts,
+  });
 
-  final AdultAuth? auth;
-  final AdultConsentStore? consentStore;
+  final StudentAuth? auth;
+  final StudentProfileRepository? profiles;
+  final TargetPlatform? platform;
+  final bool? allowDevTestAccounts;
 
   @override
   Widget build(BuildContext context) {
@@ -19,6 +28,7 @@ class MatematikEvreniApp extends StatelessWidget {
       title: 'Matematik Macerası',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
+        platform: platform,
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF087C8C),
@@ -52,9 +62,10 @@ class MatematikEvreniApp extends StatelessWidget {
           ),
         ),
       ),
-      home: AdultAccess(
-        auth: auth ?? FirebaseAdultAuth(),
-        consentStore: consentStore,
+      home: StudentAccess(
+        auth: auth ?? FirebaseStudentAuth(),
+        profiles: profiles ?? FirebaseStudentProfileRepository(),
+        allowDevTestAccounts: allowDevTestAccounts ?? devTestAccountsEnabled,
       ),
     );
   }

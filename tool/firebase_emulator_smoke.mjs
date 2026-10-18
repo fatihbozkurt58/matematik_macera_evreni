@@ -28,6 +28,18 @@ if (!signUp.ok) {
 }
 const { idToken, localId } = await signUp.json();
 assert.ok(idToken && localId, 'Auth emulator did not return a UID and ID token.');
+const otherSignUp = await fetch(`${auth}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    email: `other-${Date.now()}@example.invalid`,
+    password: 'TestOnly12345',
+    returnSecureToken: true,
+  }),
+});
+assert.equal(otherSignUp.status, 200, 'Second synthetic account signup failed.');
+const { localId: otherUid } = await otherSignUp.json();
+assert.ok(otherUid && otherUid !== localId);
 
 const checks = [
   {
@@ -35,9 +47,22 @@ const checks = [
     url: `${firestore}/v1/projects/${projectId}/databases/(default)/documents/users/${localId}`,
   },
   {
-    label: 'Firestore authenticated read',
+    label: 'Firestore own missing profile read',
     url: `${firestore}/v1/projects/${projectId}/databases/(default)/documents/users/${localId}`,
     token: idToken,
+    expected: 404,
+  },
+  {
+    label: 'Firestore cross-UID read',
+    url: `${firestore}/v1/projects/${projectId}/databases/(default)/documents/users/${otherUid}`,
+    token: idToken,
+  },
+  {
+    label: 'Firestore client profile write',
+    url: `${firestore}/v1/projects/${projectId}/databases/(default)/documents/users/${localId}`,
+    token: idToken,
+    method: 'PATCH',
+    body: JSON.stringify({ fields: { nickname: { stringValue: 'SahteProfil' } } }),
   },
   {
     label: 'Storage unauthenticated read',
@@ -58,8 +83,9 @@ for (const check of checks) {
     headers: check.token ? { Authorization: `Bearer ${check.token}` } : {},
     body: check.body,
   });
-  assert.equal(response.status, 403, `${check.label}: expected 403, got ${response.status}.`);
-  console.log(`${check.label}: denied as expected.`);
+  const expected = check.expected || 403;
+  assert.equal(response.status, expected, `${check.label}: expected ${expected}, got ${response.status}.`);
+  console.log(`${check.label}: ${response.status} as expected.`);
 }
 
 console.log(`Demo emulator rules passed for UID ${localId}.`);
