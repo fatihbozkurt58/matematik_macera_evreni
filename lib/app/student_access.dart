@@ -9,6 +9,8 @@ import 'package:google_sign_in/google_sign_in.dart';
 
 import 'firebase_dev_bootstrap.dart';
 import 'student_profile.dart';
+import 'session_preference.dart';
+import 'adventure_home.dart';
 
 const devTestAccountsEnabled =
     kDebugMode &&
@@ -24,6 +26,8 @@ class StudentSession {
 
 abstract interface class StudentAuth {
   Stream<StudentSession?> get sessionChanges;
+  bool get staySignedIn;
+  Future<void> setStaySignedIn(bool value);
   Future<StudentSession?> initialize();
   Future<StudentSession> register(
     String nickname,
@@ -40,6 +44,20 @@ abstract interface class StudentAuth {
 }
 
 class FirebaseStudentAuth implements StudentAuth {
+  FirebaseStudentAuth({SessionPreference? preference})
+    : _preference = preference ?? SecureSessionPreference();
+
+  final SessionPreference _preference;
+  bool _policyApplied = false;
+  @override
+  bool staySignedIn = true;
+
+  @override
+  Future<void> setStaySignedIn(bool value) async {
+    await _preference.write(value);
+    staySignedIn = value;
+  }
+
   FirebaseAuth? _auth;
   bool _googleInitialized = false;
 
@@ -71,11 +89,12 @@ class FirebaseStudentAuth implements StudentAuth {
   Future<StudentSession?> initialize() async {
     final app = await FirebaseDevBootstrap.initialize();
     _auth = FirebaseAuth.instanceFor(app: app);
-    final user = _ready.currentUser;
-    if (user == null) return null;
-    await user.reload();
-    final refreshed = _ready.currentUser;
-    return refreshed == null ? null : _session(refreshed);
+    if (!_policyApplied) {
+      staySignedIn = await _preference.read();
+      if (!staySignedIn) await _ready.signOut();
+      _policyApplied = true;
+    }
+    return refresh();
   }
 
   @override
@@ -141,21 +160,51 @@ class FirebaseStudentAuth implements StudentAuth {
   Future<StudentSession?> refresh() async {
     final user = _ready.currentUser;
     if (user == null) return null;
-    await user.reload();
-    final refreshed = _ready.currentUser;
-    return refreshed == null ? null : _session(refreshed);
+    try {
+      await user.reload();
+      // A refresh token may have been revoked without an Auth state event.
+      await _ready.currentUser?.getIdToken(true);
+      final refreshed = _ready.currentUser;
+      return refreshed == null ? null : _session(refreshed);
+    } on FirebaseAuthException catch (error) {
+      if (invalidSessionCodes.contains(error.code) &&
+          _ready.currentUser?.uid == user.uid) {
+        await _ready.signOut();
+      }
+      rethrow;
+    }
   }
 
   @override
-  Future<void> resetPassword(String email) =>
-      _ready.sendPasswordResetEmail(email: email);
+  Future<void> resetPassword(String email) async {
+    try {
+      await _ready.sendPasswordResetEmail(email: email);
+    } on FirebaseAuthException catch (error) {
+      if (error.code != 'user-not-found') rethrow;
+      // An unknown email has the same visible result as an existing account.
+    }
+  }
 
   @override
   Future<void> signOut() async {
     await _ready.signOut();
-    if (_googleInitialized) await GoogleSignIn.instance.signOut();
+    if (_googleInitialized) {
+      try {
+        await GoogleSignIn.instance.signOut();
+      } catch (_) {
+        // Firebase sign-out is authoritative; provider chooser cleanup can retry.
+      }
+    }
   }
 }
+
+const invalidSessionCodes = {
+  'user-disabled',
+  'user-not-found',
+  'user-token-expired',
+  'invalid-user-token',
+  'id-token-revoked',
+};
 
 enum AccessStep {
   credentials,
@@ -164,6 +213,8 @@ enum AccessStep {
   compliancePending,
   ready,
   profileError,
+  accountBlocked,
+  sessionError,
 }
 
 class StudentAccess extends StatefulWidget {
@@ -172,10 +223,12 @@ class StudentAccess extends StatefulWidget {
     required this.auth,
     required this.profiles,
     this.allowDevTestAccounts = false,
+    this.requestTimeout = const Duration(seconds: 20),
   });
   final StudentAuth auth;
   final StudentProfileRepository profiles;
   final bool allowDevTestAccounts;
+  final Duration requestTimeout;
 
   @override
   State<StudentAccess> createState() => _StudentAccessState();
@@ -190,11 +243,17 @@ class _StudentAccessState extends State<StudentAccess>
   bool initialized = false;
   bool register = false;
   bool profileLoading = false;
+  bool staySignedIn = true;
+  int sessionEpoch = 0;
+  int profileRequest = 0;
   int? grade;
   String? error;
   StudentSession? session;
   StudentProfile? profile;
-  final formKey = GlobalKey<FormState>();
+  final signInFormKey = GlobalKey<FormState>();
+  final registrationFormKey = GlobalKey<FormState>();
+  GlobalKey<FormState> get formKey =>
+      register ? registrationFormKey : signInFormKey;
   final profileFormKey = GlobalKey<FormState>();
   final nickname = TextEditingController();
   final profileNickname = TextEditingController();
@@ -202,15 +261,76 @@ class _StudentAccessState extends State<StudentAccess>
   final password = TextEditingController();
   final passwordRepeat = TextEditingController();
   StreamSubscription<StudentSession?>? sessionSubscription;
+  StreamSubscription<StudentProfile?>? profileSubscription;
 
   void watchAuthChanges() {
-    sessionSubscription ??= widget.auth.sessionChanges.listen((changed) {
-      if (!mounted || bootstrapping || busy) return;
-      if (changed?.uid != session?.uid ||
-          changed?.verified != session?.verified) {
-        unawaited(showSession(changed));
-      }
-    });
+    sessionSubscription ??= widget.auth.sessionChanges.listen(
+      (changed) {
+        if (!mounted) return;
+        if (changed?.uid != session?.uid ||
+            changed?.verified != session?.verified) {
+          unawaited(showSession(changed));
+        }
+      },
+      onError: (Object cause) {
+        if (mounted) unawaited(handleFailure(cause));
+      },
+    );
+  }
+
+  void watchProfile(String uid, int request) {
+    profileSubscription = widget.profiles
+        .watch(uid)
+        .listen(
+          (loaded) {
+            if (!mounted || session?.uid != uid || profileRequest != request) {
+              return;
+            }
+            if (loaded != null && loaded.uid != uid) {
+              setState(() {
+                profile = null;
+                step = AccessStep.profileError;
+              });
+              return;
+            }
+            setState(() {
+              profile = loaded;
+              step = loaded == null
+                  ? AccessStep.profileForm
+                  : loaded.isBlocked
+                  ? AccessStep.accountBlocked
+                  : loaded.canOpenHome
+                  ? AccessStep.ready
+                  : AccessStep.compliancePending;
+            });
+          },
+          onError: (Object cause) {
+            if (!mounted || session?.uid != uid || profileRequest != request) {
+              return;
+            }
+            setState(() {
+              profile = null;
+              step = AccessStep.profileError;
+              error = explain(cause);
+            });
+          },
+        );
+  }
+
+  Future<void> handleFailure(Object cause) async {
+    if (cause is FirebaseAuthException &&
+        invalidSessionCodes.contains(cause.code)) {
+      await showSession(null);
+    }
+    if (mounted) setState(() => error = explain(cause));
+  }
+
+  Future<void> applyAuthResult(StudentSession? value, int epoch) async {
+    if (!mounted) return;
+    if (sessionEpoch != epoch && (value == null || session?.uid != value.uid)) {
+      return;
+    }
+    await showSession(value);
   }
 
   @override
@@ -229,18 +349,50 @@ class _StudentAccessState extends State<StudentAccess>
         bootstrapping) {
       return;
     }
-    unawaited(run(() async => showSession(await widget.auth.refresh())));
+    unawaited(refreshSession());
   }
 
-  Future<void> restoreSession() async {
+  Future<void> refreshSession() => run(() async {
+    final epoch = sessionEpoch;
     try {
-      final existing = await widget.auth.initialize();
+      final refreshed = await widget.auth.refresh().timeout(
+        widget.requestTimeout,
+      );
+      await applyAuthResult(refreshed, epoch);
+    } catch (cause) {
+      if (!mounted || epoch != sessionEpoch) return;
+      if (mounted && epoch == sessionEpoch) {
+        setState(() {
+          profileRequest++;
+          final subscription = profileSubscription;
+          profileSubscription = null;
+          if (subscription != null) unawaited(subscription.cancel());
+          profile = null;
+          step = AccessStep.sessionError;
+        });
+      }
+      rethrow;
+    }
+  });
+
+  Future<void> restoreSession() async {
+    if (mounted) {
+      setState(() {
+        bootstrapping = true;
+        error = null;
+      });
+    }
+    try {
+      final existing = await widget.auth.initialize().timeout(
+        widget.requestTimeout,
+      );
       if (!mounted) return;
       initialized = true;
-      if (existing != null) await showSession(existing);
+      staySignedIn = widget.auth.staySignedIn;
       watchAuthChanges();
+      if (existing != null) await showSession(existing);
     } catch (cause) {
-      if (mounted) setState(() => error = explain(cause));
+      if (mounted) await handleFailure(cause);
     } finally {
       if (mounted) setState(() => bootstrapping = false);
     }
@@ -251,6 +403,8 @@ class _StudentAccessState extends State<StudentAccess>
     WidgetsBinding.instance.removeObserver(this);
     final subscription = sessionSubscription;
     if (subscription != null) unawaited(subscription.cancel());
+    final profileWatch = profileSubscription;
+    if (profileWatch != null) unawaited(profileWatch.cancel());
     nickname.dispose();
     profileNickname.dispose();
     email.dispose();
@@ -260,8 +414,18 @@ class _StudentAccessState extends State<StudentAccess>
   }
 
   String explain(Object cause) {
+    if (cause is TimeoutException) {
+      return 'İşlem zaman aşımına uğradı. Yeniden deneyin.';
+    }
+    if (cause is GoogleSignInException &&
+        cause.code == GoogleSignInExceptionCode.canceled) {
+      return 'Giriş iptal edildi. Yeniden deneyebilirsiniz.';
+    }
     if (cause is FirebaseFunctionsException) {
       return switch (cause.code) {
+        'unauthenticated' =>
+          'Güvenli bağlantı doğrulanamadı. Uygulamayı yeniden açıp deneyin.',
+        'resource-exhausted' => 'Çok fazla deneme. Bir süre sonra deneyin.',
         'failed-precondition' => 'Önce e-posta doğrulamasını tamamlayın.',
         'already-exists' => 'Bu hesap için profil zaten var. Yeniden yükleyin.',
         'unavailable' =>
@@ -274,13 +438,19 @@ class _StudentAccessState extends State<StudentAccess>
     }
     if (cause is FirebaseAuthException) {
       return switch (cause.code) {
+        'user-disabled' ||
+        'user-not-found' ||
+        'user-token-expired' ||
+        'invalid-user-token' ||
+        'id-token-revoked' =>
+          'Oturum sona erdi. Devam etmek için yeniden giriş yapın.',
         'operation-not-allowed' => 'Bu giriş yöntemi henüz etkinleştirilmemiş. Başka bir yöntemle giriş yapın.',
         'web-context-canceled' ||
         'canceled' ||
         'cancelled' ||
         'popup-closed-by-user' =>
           'Giriş iptal edildi. Yeniden deneyebilirsiniz.',
-        'email-already-in-use' => 'Bu e-posta için hesap bulunuyor.',
+        'email-already-in-use' => 'Kayıt tamamlanamadı. Giriş yapmayı veya şifreni sıfırlamayı deneyebilirsin.',
         'weak-password' => 'Daha güçlü bir şifre seçin.',
         'invalid-email' => 'Geçerli bir e-posta girin.',
         'network-request-failed' => 'Bağlantıyı kontrol edip yeniden deneyin.',
@@ -302,7 +472,7 @@ class _StudentAccessState extends State<StudentAccess>
     try {
       await operation();
     } catch (cause) {
-      if (mounted) setState(() => error = explain(cause));
+      if (mounted) await handleFailure(cause);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -310,7 +480,21 @@ class _StudentAccessState extends State<StudentAccess>
 
   Future<void> showSession(StudentSession? value) async {
     if (!mounted) return;
+    final request = ++profileRequest;
+    final previousWatch = profileSubscription;
+    profileSubscription = null;
+    if (previousWatch != null) unawaited(previousWatch.cancel());
+    sessionEpoch++;
     setState(() {
+      if (session?.uid != value?.uid) {
+        grade = null;
+        profileNickname.clear();
+        if (session != null) {
+          email.clear();
+          nickname.clear();
+        }
+      }
+      error = null;
       session = value;
       if (value == null) register = false;
       profile = null;
@@ -326,25 +510,35 @@ class _StudentAccessState extends State<StudentAccess>
     });
     if (value == null || !value.verified) return;
     try {
-      final loaded = await widget.profiles.load(value.uid);
-      if (!mounted || session?.uid != value.uid) return;
+      final loaded = await widget.profiles
+          .load(value.uid)
+          .timeout(widget.requestTimeout);
+      if (!mounted || session?.uid != value.uid || request != profileRequest) {
+        return;
+      }
+      if (loaded != null && loaded.uid != value.uid) {
+        throw StateError('PROFILE_UID_MISMATCH');
+      }
       setState(() {
         profile = loaded;
         step = loaded == null
             ? AccessStep.profileForm
-            : loaded.canEnterGame
+            : loaded.isBlocked
+            ? AccessStep.accountBlocked
+            : loaded.canOpenHome
             ? AccessStep.ready
             : AccessStep.compliancePending;
       });
+      watchProfile(value.uid, request);
     } catch (cause) {
-      if (mounted && session?.uid == value.uid) {
+      if (mounted && session?.uid == value.uid && request == profileRequest) {
         setState(() {
           error = explain(cause);
           step = AccessStep.profileError;
         });
       }
     } finally {
-      if (mounted && session?.uid == value.uid) {
+      if (mounted && session?.uid == value.uid && request == profileRequest) {
         setState(() => profileLoading = false);
       }
     }
@@ -353,17 +547,16 @@ class _StudentAccessState extends State<StudentAccess>
   Future<bool> ensureReady() async {
     if (initialized) return true;
     try {
-      final existing = await widget.auth.initialize();
+      final existing = await widget.auth.initialize().timeout(
+        widget.requestTimeout,
+      );
       if (!mounted) return false;
       initialized = true;
-      if (existing != null) await showSession(existing);
+      staySignedIn = widget.auth.staySignedIn;
       watchAuthChanges();
+      if (existing != null) await showSession(existing);
       return existing == null;
-    } catch (cause, stack) {
-      if (kDebugMode) {
-        debugPrint('Student auth bootstrap failed: $cause');
-        debugPrintStack(stackTrace: stack);
-      }
+    } catch (_) {
       rethrow;
     }
   }
@@ -372,20 +565,29 @@ class _StudentAccessState extends State<StudentAccess>
     if (!formKey.currentState!.validate()) return;
     await run(() async {
       if (!await ensureReady()) return;
-      final value = register
-          ? await widget.auth.register(
+      final epoch = sessionEpoch;
+      await widget.auth
+          .setStaySignedIn(staySignedIn)
+          .timeout(widget.requestTimeout);
+      if (!mounted || epoch != sessionEpoch) return;
+      final pending = register
+          ? widget.auth.register(
               nickname.text.trim(),
               email.text.trim(),
               password.text,
             )
-          : await widget.auth.signIn(email.text.trim(), password.text);
-      await showSession(value);
+          : widget.auth.signIn(email.text.trim(), password.text);
+      final value = await pending.timeout(widget.requestTimeout);
+      await applyAuthResult(value, epoch);
     });
   }
 
   Future<void> logout() => run(() async {
-    await widget.auth.signOut();
-    await showSession(null);
+    final uid = session?.uid;
+    await widget.auth.signOut().timeout(widget.requestTimeout);
+    if (mounted && (session == null || session?.uid == uid)) {
+      await showSession(null);
+    }
   });
 
   Future<void> submitProfile() async {
@@ -393,15 +595,15 @@ class _StudentAccessState extends State<StudentAccess>
     await run(() async {
       final uid = session?.uid;
       if (uid == null || session?.verified != true) return;
-      final saved = await widget.profiles.complete(
-        uid,
-        profileNickname.text.trim(),
-        grade!,
-      );
-      if (!mounted || session?.uid != uid) return;
+      final request = profileRequest;
+      final saved = await widget.profiles
+          .complete(uid, profileNickname.text.trim(), grade!)
+          .timeout(widget.requestTimeout);
+      if (!mounted || session?.uid != uid || request != profileRequest) return;
+      if (saved.uid != uid) throw StateError('PROFILE_UID_MISMATCH');
       setState(() {
         profile = saved;
-        step = saved.canEnterGame
+        step = saved.canOpenHome
             ? AccessStep.ready
             : AccessStep.compliancePending;
       });
@@ -415,97 +617,173 @@ class _StudentAccessState extends State<StudentAccess>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    backgroundColor: const Color(0xFFF5FAFB),
-    body: SafeArea(
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 440),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Center(
-                  child: Image.asset(
-                    'assets/branding/splash-island.png',
-                    width: 112,
-                    height: 112,
-                    fit: BoxFit.contain,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Matematik Macerası',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: const Color(0xFF173C45),
-                  ),
-                ),
-                const SizedBox(height: 30),
-                Text(
-                  switch (step) {
-                    AccessStep.credentials => 'Hoş geldin',
-                    AccessStep.verification => 'E-postanızı doğrulayın',
-                    AccessStep.profileForm => 'Profilini tamamla',
-                    AccessStep.compliancePending => 'Hesap hazırlanıyor',
-                    AccessStep.ready => 'Hazırsın',
-                    AccessStep.profileError => 'Profil yüklenemedi',
-                  },
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF172B3A),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                if (bootstrapping) ...[
-                  const LinearProgressIndicator(),
-                  const SizedBox(height: 12),
-                  const Text('Oturum kontrol ediliyor...'),
-                ] else ...[
-                  if (error != null) ...[
-                    DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFEEEE),
-                        borderRadius: BorderRadius.circular(8),
+  Widget build(BuildContext context) {
+    if (!bootstrapping && step == AccessStep.ready && profile != null) {
+      return Theme(
+        data: Theme.of(context).copyWith(
+          textTheme: Theme.of(context).textTheme.apply(fontFamily: 'Nunito'),
+        ),
+        child: AdventureHome(
+          key: ValueKey(profile!.uid),
+          profile: profile!,
+          onLogout: logout,
+          busy: busy,
+          error: error,
+        ),
+      );
+    }
+    return Scaffold(
+      backgroundColor: const Color(0xFFEEF7F2),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFDCEFE3),
+                        shape: BoxShape.circle,
                       ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.error_outline,
-                              color: Color(0xFFAE2626),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(child: Text(error!)),
-                          ],
-                        ),
+                      child: Image.asset(
+                        'assets/branding/splash-island.png',
+                        width: 96,
+                        height: 96,
+                        fit: BoxFit.contain,
+                        excludeFromSemantics: true,
                       ),
                     ),
-                    const SizedBox(height: 16),
-                  ],
-                  if (step == AccessStep.credentials) credentialsView(),
-                  if (step == AccessStep.verification) verificationView(),
-                  if (step == AccessStep.profileForm && !profileLoading)
-                    profileFormView(),
-                  if (step == AccessStep.compliancePending)
-                    compliancePendingView(),
-                  if (step == AccessStep.ready) readyView(),
-                  if (step == AccessStep.profileError) profileErrorView(),
-                  if (busy || profileLoading) ...[
-                    const SizedBox(height: 18),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Matematik Macera Evreni',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: const Color(0xFF173C45),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (step == AccessStep.credentials) ...[
+                    const Text(
+                      'Keşfet, öğren, kendi yolunu çiz.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Color(0xFF426252)),
+                    ),
+                    const SizedBox(height: 20),
+                  ] else
+                    const SizedBox(height: 20),
+                  Text(
+                    switch (step) {
+                      AccessStep.credentials => 'Hoş geldin',
+                      AccessStep.verification => 'E-postanızı doğrulayın',
+                      AccessStep.profileForm => 'Profilini tamamla',
+                      AccessStep.compliancePending => 'Hesap hazırlanıyor',
+                      AccessStep.ready => 'Hazırsın',
+                      AccessStep.profileError => 'Profil yüklenemedi',
+                      AccessStep.accountBlocked => 'Hesap kullanılamıyor',
+                      AccessStep.sessionError => 'Oturum doğrulanamadı',
+                    },
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF172B3A),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  if (bootstrapping) ...[
                     const LinearProgressIndicator(),
+                    const SizedBox(height: 12),
+                    const Text('Oturum kontrol ediliyor...'),
+                  ] else ...[
+                    if (error != null) ...[
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFEEEE),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.error_outline,
+                                color: Color(0xFFAE2626),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(error!)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (!initialized)
+                      OutlinedButton(
+                        onPressed: busy ? null : restoreSession,
+                        child: const Text('Oturumu yeniden kontrol et'),
+                      ),
+                    if (step == AccessStep.credentials)
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(color: const Color(0xFFD4E4DA)),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Material(
+                            color: Colors.transparent,
+                            child: credentialsView(),
+                          ),
+                        ),
+                      ),
+                    if (step == AccessStep.verification) verificationView(),
+                    if (step == AccessStep.profileForm && !profileLoading)
+                      profileFormView(),
+                    if (step == AccessStep.compliancePending)
+                      compliancePendingView(),
+                    if (step == AccessStep.ready) readyView(),
+                    if (step == AccessStep.profileError) profileErrorView(),
+                    if (step == AccessStep.sessionError) ...[
+                      const Text(
+                        'Bağlantını kontrol et. Oturum doğrulanana kadar hesap alanı kapalı.',
+                      ),
+                      FilledButton(
+                        onPressed: busy ? null : refreshSession,
+                        child: const Text('Oturumu yeniden doğrula'),
+                      ),
+                      TextButton(
+                        onPressed: busy ? null : logout,
+                        child: const Text('Çıkış yap'),
+                      ),
+                    ],
+                    if (step == AccessStep.accountBlocked) ...[
+                      const Text(
+                        'Hesabın şu anda kullanılamıyor. Başka bir hesapla giriş yapabilirsin.',
+                      ),
+                      TextButton(
+                        onPressed: busy ? null : logout,
+                        child: const Text('Çıkış yap'),
+                      ),
+                    ],
+                    if (busy || profileLoading) ...[
+                      const SizedBox(height: 18),
+                      const LinearProgressIndicator(),
+                    ],
                   ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 
   Widget credentialsView() => Form(
     key: formKey,
@@ -597,7 +875,17 @@ class _StudentAccessState extends State<StudentAccess>
             },
           ),
         ],
-        const SizedBox(height: 18),
+        const SizedBox(height: 8),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: const Text('Beni hatırla'),
+          value: staySignedIn,
+          onChanged: busy
+              ? null
+              : (value) => setState(() => staySignedIn = value ?? true),
+        ),
+        const SizedBox(height: 8),
         FilledButton(
           onPressed: busy ? null : submit,
           child: Text(register ? 'Hesap oluştur' : 'Giriş yap'),
@@ -649,7 +937,16 @@ class _StudentAccessState extends State<StudentAccess>
               ? null
               : () => run(() async {
                   if (!await ensureReady()) return;
-                  await showSession(await widget.auth.signInWithGoogle());
+                  await widget.auth
+                      .setStaySignedIn(staySignedIn)
+                      .timeout(widget.requestTimeout);
+                  final epoch = sessionEpoch;
+                  await applyAuthResult(
+                    await widget.auth.signInWithGoogle().timeout(
+                      widget.requestTimeout,
+                    ),
+                    epoch,
+                  );
                 }),
           icon: const Icon(Icons.account_circle_outlined),
           label: const Text('Google ile devam et'),
@@ -661,7 +958,16 @@ class _StudentAccessState extends State<StudentAccess>
                 ? null
                 : () => run(() async {
                     if (!await ensureReady()) return;
-                    await showSession(await widget.auth.signInWithApple());
+                    await widget.auth
+                        .setStaySignedIn(staySignedIn)
+                        .timeout(widget.requestTimeout);
+                    final epoch = sessionEpoch;
+                    await applyAuthResult(
+                      await widget.auth.signInWithApple().timeout(
+                        widget.requestTimeout,
+                      ),
+                      epoch,
+                    );
                   }),
             style: OutlinedButton.styleFrom(
               foregroundColor: Colors.white,
@@ -686,7 +992,11 @@ class _StudentAccessState extends State<StudentAccess>
         onPressed: busy
             ? null
             : () => run(() async {
-                await showSession(await widget.auth.refresh());
+                final epoch = sessionEpoch;
+                await applyAuthResult(
+                  await widget.auth.refresh().timeout(widget.requestTimeout),
+                  epoch,
+                );
               }),
         child: const Text('Doğrulamayı kontrol et'),
       ),

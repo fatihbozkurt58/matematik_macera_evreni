@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matematik/app/firebase_dev_bootstrap.dart';
 
@@ -41,6 +42,24 @@ void main() {
         platform: TargetPlatform.macOS,
       ),
       throwsUnsupportedError,
+    );
+  });
+  test('Release configuration never selects App Check debug providers', () {
+    expect(
+      FirebaseDevBootstrap.androidProvider(debug: false),
+      isA<AndroidPlayIntegrityProvider>(),
+    );
+    expect(
+      FirebaseDevBootstrap.appleProvider(debug: false),
+      isA<AppleAppAttestWithDeviceCheckFallbackProvider>(),
+    );
+    expect(
+      FirebaseDevBootstrap.androidProvider(debug: true),
+      isA<AndroidDebugProvider>(),
+    );
+    expect(
+      FirebaseDevBootstrap.appleProvider(debug: true),
+      isA<AppleDebugProvider>(),
     );
   });
 }

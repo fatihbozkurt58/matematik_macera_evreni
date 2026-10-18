@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matematik/app/student_access.dart';
 import 'package:matematik/app/student_profile.dart';
@@ -8,6 +12,14 @@ import 'package:matematik/main.dart';
 
 class FakeStudentAuth implements StudentAuth {
   final changes = StreamController<StudentSession?>.broadcast();
+  @override
+  bool staySignedIn = true;
+  @override
+  Future<void> setStaySignedIn(bool value) async {
+    if (failPreference) throw StateError('storage unavailable');
+    staySignedIn = value;
+  }
+
   int initializations = 0;
   int signIns = 0;
   int registrations = 0;
@@ -17,6 +29,11 @@ class FakeStudentAuth implements StudentAuth {
   int initializationFailures = 0;
   String? registeredNickname;
   StudentSession? current;
+  Object? refreshFailure;
+  Completer<StudentSession?>? delayedRefresh;
+  Completer<StudentSession>? delayedSignIn;
+  bool failPreference = false;
+  Completer<StudentSession?>? delayedInitialization;
 
   @override
   Stream<StudentSession?> get sessionChanges => changes.stream;
@@ -29,6 +46,7 @@ class FakeStudentAuth implements StudentAuth {
   @override
   Future<StudentSession?> initialize() async {
     initializations++;
+    if (delayedInitialization != null) return delayedInitialization!.future;
     if (initializationFailures > 0) {
       initializationFailures--;
       throw StateError('temporary bootstrap failure');
@@ -39,6 +57,7 @@ class FakeStudentAuth implements StudentAuth {
   @override
   Future<StudentSession> signIn(String email, String password) async {
     signIns++;
+    if (delayedSignIn != null) return delayedSignIn!.future;
     return current = StudentSession('test-uid', email, false);
   }
 
@@ -77,7 +96,10 @@ class FakeStudentAuth implements StudentAuth {
   Future<void> sendVerification() async {}
 
   @override
-  Future<StudentSession?> refresh() async => current;
+  Future<StudentSession?> refresh() async {
+    if (refreshFailure != null) throw refreshFailure!;
+    return delayedRefresh == null ? current : delayedRefresh!.future;
+  }
 
   @override
   Future<void> resetPassword(String email) async => resetRequests++;
@@ -87,14 +109,19 @@ class FakeStudentAuth implements StudentAuth {
 }
 
 class FakeStudentProfiles implements StudentProfileRepository {
+  final changes = StreamController<StudentProfile?>.broadcast();
+  @override
+  Stream<StudentProfile?> watch(String uid) => changes.stream;
   StudentProfile? current;
   bool failLoads = false;
   int loads = 0;
   int completions = 0;
+  final pendingLoads = <Completer<StudentProfile?>>[];
 
   @override
   Future<StudentProfile?> load(String uid) async {
     loads++;
+    if (pendingLoads.isNotEmpty) return pendingLoads.removeAt(0).future;
     if (failLoads) throw StateError('temporary profile failure');
     return current?.uid == uid ? current : null;
   }
@@ -152,7 +179,10 @@ void main() {
     expect(find.textContaining('Test sürümü'), findsNothing);
     expect(find.text('Yetişkin hesabı'), findsNothing);
     expect(find.text('Yetişkin onayı'), findsNothing);
-    expect(find.byType(CheckboxListTile), findsNothing);
+    expect(
+      find.widgetWithText(CheckboxListTile, 'Beni hatırla'),
+      findsOneWidget,
+    );
     expect(find.text('Kayıt'), findsNothing);
     expect(find.text('Hesap oluştur'), findsNothing);
     expect(find.text('Apple ile devam et'), findsNothing);
@@ -246,6 +276,7 @@ void main() {
       'test@example.com',
     );
     await tester.enterText(find.byType(TextFormField).last, 'Password1234');
+    await tester.ensureVisible(find.text('Giriş yap'));
     await tester.tap(find.text('Giriş yap'));
     await tester.pumpAndSettle();
     expect(auth.signIns, 1);
@@ -279,30 +310,31 @@ void main() {
     expect(auth.initializations, 1);
     expect(profiles.loads, 1);
     expect(find.text('Giriş yap'), findsNothing);
-    expect(find.text('Hesap hazırlanıyor'), findsOneWidget);
+    expect(find.text('Haydi keşfe!'), findsOneWidget);
     expect(find.textContaining('saved-uid'), findsNothing);
   });
 
-  testWidgets('Verified UID completes profile but cannot bypass compliance', (
-    tester,
-  ) async {
-    final auth = FakeStudentAuth()
-      ..current = const StudentSession('saved-uid', 'test@example.com', true);
-    final profiles = FakeStudentProfiles();
-    await openAccess(tester, auth, profiles: profiles);
-    expect(find.text('Profilini tamamla'), findsOneWidget);
-    await tester.enterText(find.byType(TextFormField).first, 'BilgeKaptan');
-    await tester.tap(find.text('Sınıfın'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('3. sınıf').last);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Profili kaydet'));
-    await tester.pumpAndSettle();
-    expect(profiles.completions, 1);
-    expect(profiles.current?.uid, 'saved-uid');
-    expect(find.text('Hesap hazırlanıyor'), findsOneWidget);
-    expect(find.text('Hazırsın'), findsNothing);
-  });
+  testWidgets(
+    'Verified UID completes profile and opens catalog without granting game access',
+    (tester) async {
+      final auth = FakeStudentAuth()
+        ..current = const StudentSession('saved-uid', 'test@example.com', true);
+      final profiles = FakeStudentProfiles();
+      await openAccess(tester, auth, profiles: profiles);
+      expect(find.text('Profilini tamamla'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField).first, 'BilgeKaptan');
+      await tester.tap(find.text('Sınıfın'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('3. sınıf').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Profili kaydet'));
+      await tester.pumpAndSettle();
+      expect(profiles.completions, 1);
+      expect(profiles.current?.uid, 'saved-uid');
+      expect(find.text('Haydi keşfe!'), findsOneWidget);
+      expect(profiles.current?.canEnterGame, isFalse);
+    },
+  );
 
   testWidgets('External sign-out removes protected profile state', (
     tester,
@@ -318,7 +350,7 @@ void main() {
         consentComplianceState: 'unverified',
       );
     await openAccess(tester, auth, profiles: profiles);
-    expect(find.text('Hesap hazırlanıyor'), findsOneWidget);
+    expect(find.text('Haydi keşfe!'), findsOneWidget);
     auth.changeSession(null);
     await tester.pumpAndSettle();
     expect(find.text('Hoş geldin'), findsOneWidget);
@@ -368,6 +400,7 @@ void main() {
     expect(find.textContaining('İşlem tamamlanamadı'), findsOneWidget);
     await tester.enterText(find.byType(TextFormField).first, 'a@example.com');
     await tester.enterText(find.byType(TextFormField).last, 'Password1234');
+    await tester.ensureVisible(find.text('Giriş yap'));
     await tester.tap(find.text('Giriş yap'));
     await tester.pumpAndSettle();
     expect(auth.initializations, 2);
@@ -387,6 +420,7 @@ void main() {
   testWidgets('Blank sign-in never sends credentials', (tester) async {
     final auth = FakeStudentAuth();
     await openAccess(tester, auth);
+    await tester.ensureVisible(find.text('Giriş yap'));
     await tester.tap(find.text('Giriş yap'));
     await tester.pumpAndSettle();
     expect(auth.signIns, 0);
@@ -420,5 +454,362 @@ void main() {
     await openAccess(tester, FakeStudentAuth());
     await tester.ensureVisible(find.text('Apple ile devam et'));
     expect(tester.takeException(), isNull);
+  });
+  testWidgets('Large text keeps compact registration and keyboard scrollable', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: const TextScaler.linear(2),
+            viewInsets: const EdgeInsets.only(bottom: 240),
+          ),
+          child: child!,
+        ),
+        home: StudentAccess(
+          auth: FakeStudentAuth(),
+          profiles: FakeStudentProfiles(),
+          allowDevTestAccounts: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Kayıt'));
+    await tester.tap(find.text('Kayıt'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Hesap oluştur'));
+    await tester.tap(find.text('Hesap oluştur'));
+    await tester.pumpAndSettle();
+    expect(find.text('Geçerli bir e-posta girin.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Welcome screen visual baseline', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.runAsync(() async {
+      final configFile = File('.dart_tool/package_config.json').absolute;
+      final config = jsonDecode(await configFile.readAsString()) as Map;
+      final flutter = (config['packages'] as List).cast<Map>().singleWhere(
+        (package) => package['name'] == 'flutter',
+      );
+      final packageRoot = Directory.fromUri(
+        configFile.uri.resolve(flutter['rootUri'] as String),
+      );
+      final sdk = packageRoot.parent.parent;
+      for (final entry in {
+        'Roboto': 'Roboto-Regular.ttf',
+        'MaterialIcons': 'MaterialIcons-Regular.otf',
+      }.entries) {
+        final loader = FontLoader(entry.key)
+          ..addFont(
+            File(
+              '${sdk.path}/bin/cache/artifacts/material_fonts/${entry.value}',
+            ).readAsBytes().then((bytes) => ByteData.sublistView(bytes)),
+          );
+        await loader.load();
+      }
+    });
+    await openAccess(tester, FakeStudentAuth(), allowDevTestAccounts: true);
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('goldens/welcome_phone.png'),
+    );
+  });
+  testWidgets('Changing access mode clears field errors and preserves email', (
+    tester,
+  ) async {
+    await openAccess(tester, FakeStudentAuth(), allowDevTestAccounts: true);
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'draft@example.com',
+    );
+    await tester.ensureVisible(find.text('Giriş yap'));
+    await tester.tap(find.text('Giriş yap'));
+    await tester.pumpAndSettle();
+    expect(find.text('Şifre girin.'), findsOneWidget);
+    await tester.ensureVisible(find.text('Kayıt'));
+    await tester.tap(find.text('Kayıt'));
+    await tester.pumpAndSettle();
+    expect(find.text('Şifre girin.'), findsNothing);
+    expect(find.text('draft@example.com'), findsOneWidget);
+    await tester.ensureVisible(find.text('Hesap oluştur'));
+    await tester.tap(find.text('Hesap oluştur'));
+    await tester.pumpAndSettle();
+    expect(find.text('3-20 karakterlik bir takma ad girin.'), findsOneWidget);
+    await tester.ensureVisible(find.text('Giriş'));
+    await tester.tap(find.text('Giriş'));
+    await tester.pumpAndSettle();
+    expect(find.text('3-20 karakterlik bir takma ad girin.'), findsNothing);
+    expect(find.text('draft@example.com'), findsOneWidget);
+  });
+  testWidgets('Stay signed in defaults on and selected policy precedes login', (
+    tester,
+  ) async {
+    final auth = FakeStudentAuth();
+    await openAccess(tester, auth);
+    final option = find.widgetWithText(CheckboxListTile, 'Beni hatırla');
+    expect(tester.widget<CheckboxListTile>(option).value, isTrue);
+    await tester.ensureVisible(option);
+    await tester.tap(option);
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'test@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).last, 'Password1234');
+    await tester.ensureVisible(find.text('Giriş yap'));
+    await tester.tap(find.text('Giriş yap'));
+    await tester.pumpAndSettle();
+    expect(auth.staySignedIn, isFalse);
+    expect(auth.signIns, 1);
+  });
+
+  testWidgets('Cannot start login if session policy cannot be stored', (
+    tester,
+  ) async {
+    final auth = FakeStudentAuth()..failPreference = true;
+    await openAccess(tester, auth);
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'test@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).last, 'Password1234');
+    await tester.ensureVisible(find.text('Giriş yap'));
+    await tester.tap(find.text('Giriş yap'));
+    await tester.pumpAndSettle();
+    expect(auth.signIns, 0);
+  });
+
+  testWidgets('Startup retry restores existing session without credentials', (
+    tester,
+  ) async {
+    final auth = FakeStudentAuth()..initializationFailures = 1;
+    await openAccess(tester, auth);
+    auth.current = const StudentSession('saved', 'test@example.com', true);
+    await tester.ensureVisible(find.text('Oturumu yeniden kontrol et'));
+    await tester.tap(find.text('Oturumu yeniden kontrol et'));
+    await tester.pumpAndSettle();
+    expect(auth.signIns, 0);
+    expect(auth.initializations, 2);
+    expect(find.text('Profilini tamamla'), findsOneWidget);
+  });
+
+  testWidgets('Sign out during pending login cannot resurrect old result', (
+    tester,
+  ) async {
+    final pending = Completer<StudentSession>();
+    final auth = FakeStudentAuth()..delayedSignIn = pending;
+    await openAccess(tester, auth);
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'test@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).last, 'Password1234');
+    await tester.ensureVisible(find.text('Giriş yap'));
+    await tester.tap(find.text('Giriş yap'));
+    await tester.pump();
+    auth.changeSession(const StudentSession('old', 'test@example.com', false));
+    await tester.pump();
+    auth.changeSession(null);
+    await tester.pump();
+    pending.complete(const StudentSession('old', 'test@example.com', true));
+    await tester.pumpAndSettle();
+    expect(find.text('Giriş yap'), findsOneWidget);
+    expect(find.text('Profilini tamamla'), findsNothing);
+  });
+
+  testWidgets('Same UID stale profile read cannot replace newer guard', (
+    tester,
+  ) async {
+    final first = Completer<StudentProfile?>();
+    final second = Completer<StudentProfile?>();
+    final profiles = FakeStudentProfiles()
+      ..pendingLoads.addAll([first, second]);
+    final auth = FakeStudentAuth();
+    await openAccess(tester, auth, profiles: profiles);
+    auth.changeSession(const StudentSession('same', 'test@example.com', true));
+    await tester.pump();
+    auth.changeSession(null);
+    await tester.pump();
+    auth.changeSession(const StudentSession('same', 'test@example.com', true));
+    await tester.pump();
+    second.complete(
+      const StudentProfile(
+        uid: 'same',
+        nickname: 'YeniProfil',
+        grade: 2,
+        registrationStatus: 'suspended',
+        consentComplianceState: 'verified',
+      ),
+    );
+    await tester.pumpAndSettle();
+    first.complete(
+      const StudentProfile(
+        uid: 'same',
+        nickname: 'EskiProfil',
+        grade: 2,
+        registrationStatus: 'active',
+        consentComplianceState: 'verified',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Hesap kullanılamıyor'), findsOneWidget);
+    expect(find.text('Haydi keşfe!'), findsNothing);
+  });
+
+  testWidgets('Revoked token removes protected state on foreground refresh', (
+    tester,
+  ) async {
+    final auth = FakeStudentAuth()
+      ..current = const StudentSession('saved', 'test@example.com', true);
+    await openAccess(tester, auth);
+    auth.refreshFailure = FirebaseAuthException(code: 'user-token-expired');
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(find.text('Giriş yap'), findsOneWidget);
+    expect(find.text('Profilini tamamla'), findsNothing);
+  });
+
+  testWidgets('Old refresh failure cannot clear a newly signed-in UID', (
+    tester,
+  ) async {
+    final pending = Completer<StudentSession?>();
+    final auth = FakeStudentAuth()
+      ..current = const StudentSession('old', 'old@example.com', true)
+      ..delayedRefresh = pending;
+    await openAccess(tester, auth);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    auth.changeSession(const StudentSession('new', 'new@example.com', false));
+    await tester.pump();
+    pending.completeError(FirebaseAuthException(code: 'user-token-expired'));
+    await tester.pumpAndSettle();
+    expect(find.text('E-postanızı doğrulayın'), findsOneWidget);
+    expect(find.text('Giriş yap'), findsNothing);
+    expect(find.textContaining('Oturum sona erdi'), findsNothing);
+  });
+
+  testWidgets('Network failure closes protected state and retry recovers', (
+    tester,
+  ) async {
+    final auth = FakeStudentAuth()
+      ..current = const StudentSession('saved', 'test@example.com', true);
+    await openAccess(tester, auth);
+    auth.refreshFailure = FirebaseAuthException(code: 'network-request-failed');
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(find.text('Oturum doğrulanamadı'), findsOneWidget);
+    expect(find.text('Profilini tamamla'), findsNothing);
+    auth.refreshFailure = null;
+    await tester.tap(find.text('Oturumu yeniden doğrula'));
+    await tester.pumpAndSettle();
+    expect(find.text('Profilini tamamla'), findsOneWidget);
+  });
+  testWidgets('Server profile suspension closes the account immediately', (
+    tester,
+  ) async {
+    final auth = FakeStudentAuth()
+      ..current = const StudentSession('saved', 'test@example.com', true);
+    final profiles = FakeStudentProfiles()
+      ..current = const StudentProfile(
+        uid: 'saved',
+        nickname: 'Kaptan',
+        grade: 3,
+        registrationStatus: 'active',
+        consentComplianceState: 'verified',
+      );
+    await openAccess(tester, auth, profiles: profiles);
+    expect(find.text('Haydi keşfe!'), findsOneWidget);
+    profiles.changes.add(
+      const StudentProfile(
+        uid: 'saved',
+        nickname: 'Kaptan',
+        grade: 3,
+        registrationStatus: 'suspended',
+        consentComplianceState: 'verified',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Hesap kullanılamıyor'), findsOneWidget);
+    expect(find.text('Haydi keşfe!'), findsNothing);
+  });
+
+  testWidgets('Revoked compliance removes game readiness without logout', (
+    tester,
+  ) async {
+    final auth = FakeStudentAuth()
+      ..current = const StudentSession('saved', 'test@example.com', true);
+    final profiles = FakeStudentProfiles()
+      ..current = const StudentProfile(
+        uid: 'saved',
+        nickname: 'Kaptan',
+        grade: 3,
+        registrationStatus: 'active',
+        consentComplianceState: 'verified',
+      );
+    await openAccess(tester, auth, profiles: profiles);
+    profiles.changes.add(
+      const StudentProfile(
+        uid: 'saved',
+        nickname: 'Kaptan',
+        grade: 3,
+        registrationStatus: 'active',
+        consentComplianceState: 'revoked',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Hesap hazırlanıyor'), findsOneWidget);
+    expect(find.text('Haydi keşfe!'), findsNothing);
+  });
+
+  testWidgets('Profile stream errors fail closed', (tester) async {
+    final auth = FakeStudentAuth()
+      ..current = const StudentSession('saved', 'test@example.com', true);
+    final profiles = FakeStudentProfiles()
+      ..current = const StudentProfile(
+        uid: 'saved',
+        nickname: 'Kaptan',
+        grade: 3,
+        registrationStatus: 'active',
+        consentComplianceState: 'verified',
+      );
+    await openAccess(tester, auth, profiles: profiles);
+    profiles.changes.addError(StateError('permission denied'));
+    await tester.pumpAndSettle();
+    expect(find.text('Profil yüklenemedi'), findsOneWidget);
+    expect(find.text('Haydi keşfe!'), findsNothing);
+  });
+
+  testWidgets('Pending bootstrap times out and recovers without losing a UID', (
+    tester,
+  ) async {
+    final auth = FakeStudentAuth()
+      ..delayedInitialization = Completer<StudentSession?>();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StudentAccess(
+          auth: auth,
+          profiles: FakeStudentProfiles(),
+          requestTimeout: const Duration(milliseconds: 100),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pumpAndSettle();
+    expect(find.text('Oturumu yeniden kontrol et'), findsOneWidget);
+    expect(find.textContaining('zaman aşımına'), findsOneWidget);
+    auth.delayedInitialization = null;
+    auth.current = const StudentSession('saved', 'test@example.com', true);
+    await tester.ensureVisible(find.text('Oturumu yeniden kontrol et'));
+    await tester.tap(find.text('Oturumu yeniden kontrol et'));
+    await tester.pumpAndSettle();
+    expect(find.text('Profilini tamamla'), findsOneWidget);
   });
 }

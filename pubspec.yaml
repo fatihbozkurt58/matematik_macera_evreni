@@ -1,5 +1,5 @@
 name: matematik
-description: Matematik Macerasi iOS ve Android uygulamasi.
+description: Matematik Macera Evreni iOS ve Android uygulamasi.
 publish_to: none
 version: 0.1.0+1
 
@@ -17,9 +17,12 @@ dependencies:
   firebase_storage: ^13.3.0
   flutter:
     sdk: flutter
+  flutter_secure_storage: ^11.2.0
   google_sign_in: ^7.2.0
 
 dev_dependencies:
+  integration_test:
+    sdk: flutter
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
@@ -29,3 +32,10 @@ flutter:
   assets:
     - assets/branding/app-icon-master.png
     - assets/branding/splash-island.png
+    - assets/home/adventure-archipelago.png
+    - assets/home/adventure-archipelago-v2.png
+    - assets/fonts/Nunito-OFL.txt
+  fonts:
+    - family: Nunito
+      fonts:
+        - asset: assets/fonts/Nunito.ttf

@@ -25,21 +25,22 @@ class MatematikEvreniApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Matematik Macerası',
+      title: 'Matematik Macera Evreni',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         platform: platform,
         useMaterial3: true,
+        fontFamily: 'Roboto',
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF087C8C),
-          secondary: const Color(0xFFE68753),
+          seedColor: const Color(0xFF246447),
+          secondary: const Color(0xFFD8803B),
           surface: Colors.white,
         ),
-        scaffoldBackgroundColor: const Color(0xFFF5FAFB),
+        scaffoldBackgroundColor: const Color(0xFFEEF7F2),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.white,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 16,
             vertical: 16,
@@ -49,7 +50,7 @@ class MatematikEvreniApp extends StatelessWidget {
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(52),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
             ),
           ),
         ),
@@ -57,7 +58,7 @@ class MatematikEvreniApp extends StatelessWidget {
           style: OutlinedButton.styleFrom(
             minimumSize: const Size.fromHeight(52),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
             ),
           ),
         ),

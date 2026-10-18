@@ -19,7 +19,7 @@
                             <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="SplashIsland" translatesAutoresizingMaskIntoConstraints="NO" id="splash-island">
                                 <rect key="frame" x="97" y="248" width="196" height="196"/>
                             </imageView>
-                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="Matematik Macerası" textAlignment="center" lineBreakMode="tailTruncation" numberOfLines="1" translatesAutoresizingMaskIntoConstraints="NO" id="splash-title">
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="Matematik Macera Evreni" textAlignment="center" lineBreakMode="tailTruncation" numberOfLines="1" translatesAutoresizingMaskIntoConstraints="NO" id="splash-title">
                                 <rect key="frame" x="36" y="464" width="318" height="36"/>
                                 <fontDescription key="fontDescription" type="system" weight="semibold" pointSize="26"/>
                                 <color key="textColor" red="0.0667" green="0.2824" blue="0.2941" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
